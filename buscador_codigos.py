@@ -2,7 +2,12 @@
 # -*- coding: utf-8 -*-
 
 """
-Buscador + Convertidor con gestión de Proveedores integrada (v91)
+Buscador + Convertidor con gestión de Proveedores integrada (v92-dev)
+- v92-dev: integración inicial de Maestro de Packs.
+    * Carga del Maestro de Packs desde el menú principal.
+    * Cruce de artículos contra la columna "Código producto en pack".
+    * Columna "Packs" en el buscador y ventana de packs vinculados.
+
 - v91: motor de búsqueda mejorado — 5 mejoras.
     * Ranking de relevancia: resultados ordenados por score (exacto > empieza-con
       > token exacto > contiene en código > contiene en nombre > barcode).
@@ -858,6 +863,78 @@ def _filter_combobox_choices(term: str, choices: list, combo, result_var) -> Non
 #  Vistas (Frames) y Navegación
 # =====================================================
 
+def _norm_pack_code(value: str) -> str:
+    """Normaliza codigos de articulo/pack para cruces con Maestro de Packs."""
+    s = "" if value is None else str(value).strip().upper()
+    return _RE_NON_ALNUM.sub("", s)
+
+
+def _find_pack_column(columns, wanted_names, fallback_idx=None):
+    norm_map = {_normalize_text(c): c for c in columns}
+    for name in wanted_names:
+        col = norm_map.get(_normalize_text(name))
+        if col is not None:
+            return col
+    if fallback_idx is not None and fallback_idx < len(columns):
+        return columns[fallback_idx]
+    return None
+
+
+def load_packs_data(path: Path):
+    """Lee Maestro de Packs y devuelve (df_detalle, indice_por_codigo_articulo)."""
+    df = pd.read_excel(path, sheet_name=0, dtype=str).fillna("")
+    if df.empty:
+        raise ValueError("El maestro de packs esta vacio.")
+
+    cols = list(df.columns)
+    pack_code_col = _find_pack_column(cols, ["Codigo"], 0)
+    pack_name_col = _find_pack_column(cols, ["Nombre"], 1)
+    pack_bar_col = _find_pack_column(cols, ["Codigo barra interno"], 3)
+    comp_code_col = _find_pack_column(cols, ["Codigo producto en pack"], 6)
+    qty_col = _find_pack_column(cols, ["Cantidad producto en pack"], 7)
+
+    missing = [
+        label for label, col in (
+            ("Codigo pack", pack_code_col),
+            ("Nombre pack", pack_name_col),
+            ("Codigo barra pack", pack_bar_col),
+            ("Codigo producto en pack", comp_code_col),
+            ("Cantidad producto en pack", qty_col),
+        ) if col is None
+    ]
+    if missing:
+        raise ValueError(f"No se encontraron columnas requeridas: {missing}")
+
+    work = df[[pack_code_col, pack_name_col, pack_bar_col, comp_code_col, qty_col]].copy()
+    work.columns = ["pack_codigo", "pack_nombre", "pack_barra", "articulo_codigo", "cantidad"]
+    for c in work.columns:
+        work[c] = work[c].fillna("").astype(str).str.strip()
+
+    for c in ("pack_codigo", "pack_nombre", "pack_barra"):
+        work[c] = work[c].replace("", pd.NA).ffill().fillna("")
+
+    work = work[work["articulo_codigo"].astype(str).str.strip() != ""].copy()
+    if work.empty:
+        raise ValueError("No se encontraron codigos de productos en pack.")
+
+    work["_articulo_norm"] = work["articulo_codigo"].map(_norm_pack_code)
+    work = work[work["_articulo_norm"] != ""].copy()
+    work = work.reset_index(drop=True)
+
+    packs_index = {}
+    for _, row in work.iterrows():
+        record = {
+            "pack_codigo": row["pack_codigo"],
+            "pack_nombre": row["pack_nombre"],
+            "pack_barra": row["pack_barra"],
+            "articulo_codigo": row["articulo_codigo"],
+            "cantidad": row["cantidad"],
+        }
+        packs_index.setdefault(row["_articulo_norm"], []).append(record)
+
+    return work, packs_index
+
+
 class StartView(ttk.Frame):
     """Pantalla de inicio SIN vista previa de proveedores."""
     def __init__(
@@ -868,7 +945,9 @@ class StartView(ttk.Frame):
         on_open_tivendo,
         on_open_ingreso_masivo,
         on_load_listado,
+        on_load_packs,
         listado_cargado: bool,
+        packs_cargado: bool,
     ):
         super().__init__(master)
         self.master.title("Buscador de Códigos — MERCADO HOUSE")
@@ -901,10 +980,20 @@ class StartView(ttk.Frame):
         )
         self.btn_cargar_listado.pack(pady=(18, 8))
 
+        self.btn_cargar_packs = ttk.Button(
+            self,
+            text="Cargar MAESTRO DE PACKS para ver packs vinculados",
+            command=on_load_packs,
+        )
+        self.btn_cargar_packs.pack(pady=(0, 8))
+
         # Etiqueta de estado + botones (delegado a set_listado_cargado)
         self.lbl_estado = ttk.Label(self, text="", foreground="#555")
         self.lbl_estado.pack(pady=(4, 0), anchor="w")
+        self.lbl_estado_packs = ttk.Label(self, text="", foreground="#555")
+        self.lbl_estado_packs.pack(pady=(2, 0), anchor="w")
         self.set_listado_cargado(listado_cargado)
+        self.set_packs_cargado(packs_cargado)
 
     @staticmethod
     def _estado_texto(cargado: bool) -> str:
@@ -920,6 +1009,17 @@ class StartView(ttk.Frame):
         self.btn_ingreso.config(state=state_dep)
         try:
             self.lbl_estado.config(text=self._estado_texto(cargado))
+        except Exception:
+            pass
+
+    @staticmethod
+    def _estado_packs_texto(cargado: bool) -> str:
+        return ("Maestro de packs: CARGADO" if cargado
+                else "Maestro de packs: NO cargado (el buscador no mostrara packs vinculados)")
+
+    def set_packs_cargado(self, cargado: bool):
+        try:
+            self.lbl_estado_packs.config(text=self._estado_packs_texto(cargado))
         except Exception:
             pass
 
@@ -1015,13 +1115,16 @@ class ProvidersView(ttk.Frame):
 
 class SearchView(ttk.Frame):
     """Buscador con barra superior para el botón Volver (no desplaza el contenido)."""
-    def __init__(self, master, go_home_cb, initial_db_path: Optional[Path]):
+    def __init__(self, master, go_home_cb, initial_db_path: Optional[Path], packs_path: Optional[Path] = None, packs_index: Optional[dict] = None):
         super().__init__(master)
-        self.master.title("Buscador de Códigos — MERCADO HOUSE (v91)")
+        self.master.title("Buscador de Códigos — MERCADO HOUSE (v92-dev)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
         self.prefs = load_prefs()
         self.db_path: Optional[Path] = None  # inicializado explícitamente
+
+        self.packs_path = packs_path
+        self.packs_index = packs_index or {}
 
         # Carga de datos
         try:
@@ -1082,21 +1185,25 @@ class SearchView(ttk.Frame):
         ttk.Button(btns, text="Buscar general", command=lambda: self.on_search(force_general=True)).pack(side=tk.LEFT, padx=4)
         ttk.Button(btns, text="Limpiar", command=self.on_clear).pack(side=tk.LEFT, padx=4)
         ttk.Button(btns, text="Historial", command=self._show_history).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btns, text="Ver packs vinculados", command=self.show_linked_packs).pack(side=tk.LEFT, padx=4)
         ttk.Button(btns, text="Copiar cód.barra (internos)", command=self.copy_barcodes_internos).pack(side=tk.LEFT, padx=4)
         ttk.Button(btns, text="Copiar cód.barra (externos)", command=self.copy_barcodes_externos).pack(side=tk.LEFT, padx=4)
         ttk.Button(btns, text="Copiar nombres + cod.barra", command=self.copy_nombre_interno).pack(side=tk.LEFT, padx=4)
         ttk.Button(btns, text="Copiar nombres", command=self.copy_nombres).pack(side=tk.LEFT, padx=4)
         ttk.Button(btns, text="Copiar NO ENCONTRADOS", command=self.copy_not_found_inputs).pack(side=tk.LEFT, padx=4)
 
-        cols = ("codigo","nombre","barcode_interno","barcode_externo","empresa","__input")
+        cols = ("codigo","nombre","barcode_interno","barcode_externo","empresa","packs","__input")
         self.tree = ttk.Treeview(self, columns=cols, show="headings", selectmode="extended")
         for c, t in zip(cols, ["Código","Nombre","Cód. barra interno","Cód. barra externo","Empresa","Código buscado"]):
             self.tree.heading(c, text=t)
+        self.tree.heading("packs", text="Packs")
+        self.tree.heading("__input", text="Codigo buscado")
         self.tree.column("codigo", width=180, anchor="w")
         self.tree.column("nombre", width=420, anchor="w")
         self.tree.column("barcode_interno", width=180, anchor="w")
         self.tree.column("barcode_externo", width=180, anchor="w")
         self.tree.column("empresa", width=240, anchor="w")
+        self.tree.column("packs", width=90, anchor="center")
         self.tree.column("__input", width=200, anchor="w")
         self.tree.tag_configure("dup_input", background="#FFF3CD")
 
@@ -1305,6 +1412,15 @@ class SearchView(ttk.Frame):
         name = self.empresas.get(int(num), "")
         return f"{name} (Id. {num})"
 
+    def _pack_records_for_code(self, codigo: str):
+        if not self.packs_index:
+            return []
+        return self.packs_index.get(_norm_pack_code(codigo), [])
+
+    def _pack_display_for_code(self, codigo: str) -> str:
+        records = self._pack_records_for_code(codigo)
+        return f"Si ({len(records)})" if records else "No"
+
     def populate(self, df, emp_id, not_found_count=0):
         """Rellena el Treeview con los resultados de búsqueda y actualiza la barra de estado."""
         for x in self.tree.get_children(): self.tree.delete(x)
@@ -1327,14 +1443,18 @@ class SearchView(ttk.Frame):
 
         ins = self.tree.insert
         disp = self._display_emp
+        pack_disp = self._pack_display_for_code
         for cod, nom, bi, be, eid, inp in zip(col_codigo, col_nombre, col_bi, col_be, col_eid, col_inp):
             emp_txt = "" if nom == "No encontrado" else disp(eid)
+            pack_txt = "" if nom == "No encontrado" else pack_disp(cod)
             tags = ("dup_input",) if inp.strip() in dup_inputs else ()
-            ins("", "end", values=(cod, nom, bi, be, emp_txt, inp), tags=tags)
+            ins("", "end", values=(cod, nom, bi, be, emp_txt, pack_txt, inp), tags=tags)
 
         extra = ""
         if not_found_count: extra += f" | No encontrados: {not_found_count}"
         if dup_inputs: extra += f" | Duplicados (por código ingresado): {len(dup_inputs)}"
+        if self.packs_index:
+            extra += " | Packs activos"
         self.var_status.set(f"{self.status_db_text} | Resultados: {total} fila(s). Mostrando hasta {MAX_RESULTS}.{extra}")
         self.last_results = df
 
@@ -1405,6 +1525,121 @@ class SearchView(ttk.Frame):
         if raw_query:
             self._history.appendleft(raw_query)
         self.populate(out.head(MAX_RESULTS), emp_id, not_found_count=nf)
+
+    def _rows_for_pack_lookup(self):
+        if self.last_results is None or self.last_results.empty:
+            return []
+
+        children = list(self.tree.get_children())
+        selected = set(self.tree.selection())
+        positions = [i for i, iid in enumerate(children) if iid in selected] if selected else list(range(len(children)))
+
+        rows = []
+        for pos in positions:
+            if pos >= len(self.last_results):
+                continue
+            row = self.last_results.iloc[pos]
+            codigo = str(row.get("codigo", "")).strip()
+            nombre = str(row.get("nombre", "")).strip()
+            if not codigo or nombre == "No encontrado":
+                continue
+            rows.append((codigo, nombre))
+        return rows
+
+    def show_linked_packs(self):
+        if not self.packs_index:
+            messagebox.showinfo("Packs", "Primero carga el MAESTRO DE PACKS desde el menu principal.")
+            return
+
+        rows = self._rows_for_pack_lookup()
+        if not rows:
+            messagebox.showinfo("Packs", "No hay articulos validos para consultar. Selecciona una fila o realiza una busqueda.")
+            return
+
+        details = []
+        seen = set()
+        for codigo, nombre in rows:
+            for rec in self._pack_records_for_code(codigo):
+                key = (codigo, rec["pack_codigo"], rec["articulo_codigo"], rec["cantidad"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                details.append({
+                    "codigo_articulo": codigo,
+                    "nombre_articulo": nombre,
+                    **rec,
+                })
+
+        if not details:
+            messagebox.showinfo("Packs", "No se encontraron packs vinculados para los articulos consultados.")
+            return
+
+        top = tk.Toplevel(self)
+        top.title("Packs vinculados")
+        top.geometry("980x420")
+        top.transient(self.winfo_toplevel())
+
+        info = ttk.Label(
+            top,
+            text=f"Packs vinculados encontrados: {len(details)}",
+            foreground="#444",
+        )
+        info.pack(fill="x", padx=10, pady=(10, 4))
+
+        frame = ttk.Frame(top)
+        frame.pack(fill="both", expand=True, padx=10, pady=6)
+
+        cols = ("codigo_articulo", "pack_codigo", "pack_nombre", "pack_barra", "cantidad")
+        tree = ttk.Treeview(frame, columns=cols, show="headings", selectmode="extended")
+        headings = {
+            "codigo_articulo": "Articulo",
+            "pack_codigo": "Codigo pack",
+            "pack_nombre": "Nombre pack",
+            "pack_barra": "Codigo barra pack",
+            "cantidad": "Cantidad",
+        }
+        widths = {
+            "codigo_articulo": 120,
+            "pack_codigo": 120,
+            "pack_nombre": 430,
+            "pack_barra": 180,
+            "cantidad": 90,
+        }
+        for col in cols:
+            tree.heading(col, text=headings[col])
+            tree.column(col, width=widths[col], anchor="w")
+        tree.column("cantidad", anchor="center")
+
+        vsb = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+        tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="left", fill="y")
+
+        for rec in details:
+            tree.insert(
+                "",
+                "end",
+                values=(
+                    rec["codigo_articulo"],
+                    rec["pack_codigo"],
+                    rec["pack_nombre"],
+                    rec["pack_barra"],
+                    rec["cantidad"],
+                ),
+            )
+
+        def copy_pack_codes():
+            codes = []
+            for rec in details:
+                code = str(rec["pack_codigo"]).strip()
+                if code and code not in codes:
+                    codes.append(code)
+            self._copy_to_clipboard(JOIN_SEP.join(codes), f"Copiados {len(codes)} codigo(s) de pack.")
+
+        buttons = ttk.Frame(top)
+        buttons.pack(fill="x", padx=10, pady=(0, 10))
+        ttk.Button(buttons, text="Copiar codigos de pack", command=copy_pack_codes).pack(side="left")
+        ttk.Button(buttons, text="Cerrar", command=top.destroy).pack(side="right")
 
     # ---- Helper de portapapeles ----
     def _copy_to_clipboard(self, text: str, status_msg: str):
@@ -1710,6 +1945,9 @@ class RootApp(tk.Tk):
 
         # Ruta global del EXCEL "Listado de artículos" que usarán los módulos
         self.listado_path: Optional[Path] = None
+        self.packs_path: Optional[Path] = None
+        self.packs_df = None
+        self.packs_index = {}
 
         ensure_empresas_seed_applied()  # Sincroniza empresas.json con la semilla y conserva agregados
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -1760,6 +1998,45 @@ class RootApp(tk.Tk):
             w.destroy()
         self.start_view = None  # evitar referencia colgante a widget destruido
 
+    def _choose_packs_inicial(self):
+        """Pide el Excel MAESTRO DE PACKS y lo deja disponible para el buscador."""
+        prefs = load_prefs()
+        path = filedialog.askopenfilename(
+            title="Selecciona el EXCEL MAESTRO DE PACKS",
+            initialdir=prefs.get("last_dir"),
+            filetypes=[("Excel", "*.xlsm *.xlsx *.xls"), ("Todos los archivos", "*.*")],
+        )
+        if not path:
+            return
+
+        try:
+            p = Path(path)
+            packs_df, packs_index = load_packs_data(p)
+            self.packs_path = p
+            self.packs_df = packs_df
+            self.packs_index = packs_index
+            prefs["last_dir"] = str(p.parent)
+            save_prefs(prefs)
+        except Exception as e:
+            self.packs_path = None
+            self.packs_df = None
+            self.packs_index = {}
+            messagebox.showerror("Error al cargar maestro de packs", str(e))
+            return
+
+        if hasattr(self, "start_view") and self.start_view is not None:
+            try:
+                self.start_view.set_packs_cargado(True)
+            except Exception:
+                pass
+
+        messagebox.showinfo(
+            "Maestro de packs cargado",
+            f"Se cargo correctamente el MAESTRO DE PACKS.\n\n"
+            f"Archivo: {self.packs_path.name}\n"
+            f"Articulos con packs: {len(self.packs_index)}",
+        )
+
     def _show_start(self):
         self._clear()
         self.start_view = StartView(
@@ -1769,7 +2046,9 @@ class RootApp(tk.Tk):
             on_open_tivendo=self._tivendo_flow,
             on_open_ingreso_masivo=self._ingreso_masivo_flow,
             on_load_listado=self._choose_listado_inicial,
+            on_load_packs=self._choose_packs_inicial,
             listado_cargado=self.listado_path is not None,
+            packs_cargado=bool(self.packs_index),
         )
 
     def _require_listado(self) -> bool:
@@ -1844,7 +2123,13 @@ class RootApp(tk.Tk):
             )
     def _show_search(self, db_path: Optional[Path]):
         self._clear()
-        SearchView(self, go_home_cb=self._show_start, initial_db_path=db_path)
+        SearchView(
+            self,
+            go_home_cb=self._show_start,
+            initial_db_path=db_path,
+            packs_path=self.packs_path,
+            packs_index=self.packs_index,
+        )
 
 def is_ident_header(x: str) -> bool:
     x = _norm_lc(x)
@@ -1876,7 +2161,7 @@ def clean_price(s: str) -> str:
 class TivendoWindow(ttk.Frame):
     def __init__(self, master, listado_path: Optional[Path] = None, go_home_cb=None):
         super().__init__(master)
-        self.master.title("Tivendo - Cambios masivos de precios (v91)")
+        self.master.title("Tivendo - Cambios masivos de precios (v92-dev)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
 
@@ -2488,7 +2773,7 @@ def buscar_siguiente_codigo_disponible(codigo_actual: str, codigos_catalogo_set,
 class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
     def __init__(self, master, catalogo_path: Optional[Path] = None, go_home_cb=None):
         super().__init__(master)
-        self.master.title("Tivendo - Ingreso Masivo de Artículos (v91)")
+        self.master.title("Tivendo - Ingreso Masivo de Artículos (v92-dev)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
 
