@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+.cache/
+.claude/
+buscador_prefs.json
+buscador_codigos_v7*.py
+buscador_codigos_v8*.py
+MH_TMP_BASE_*.xlsx
+~$*.xlsx
