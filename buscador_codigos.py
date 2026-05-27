@@ -605,6 +605,11 @@ def parse_codes(text: str):
             out.append(code)
     return out
 
+
+def _looks_like_barcode(text: str) -> bool:
+    digits = _RE_NO_DIGITS.sub("", str(text or ""))
+    return len(digits) >= 6
+
 def normalize_code_token(t: str) -> str:
     """Normaliza token para comparación: lower, strip y colapsa espacios internos."""
     t = str(t).strip().lower()
@@ -1478,10 +1483,14 @@ class SearchView(ttk.Frame):
             q_norm = normalize_code_token(q_ws)
             out    = _score_results(df, q, q_ws, q_norm, exact, by_barras, tok_index)
             if out.empty:
-                suggs = _find_fuzzy_suggestions(q_norm, df)
+                if not by_barras and _looks_like_barcode(q):
+                    hint = "  Parece codigo de barra: marca 'Buscar por codigos de barra' y vuelve a buscar."
+                    suggs = []
+                else:
+                    suggs = _find_fuzzy_suggestions(q_norm, df)
                 if suggs:
                     hint = "  ¿Quisiste decir: " + ", ".join(suggs) + "?"
-                else:
+                elif not (not by_barras and _looks_like_barcode(q)):
                     hint = ""
                 self.populate(_make_nf_row(q, 0), emp_id, not_found_count=1)
                 self.var_status.set(f"{self.status_db_text} | No encontrado: {q}.{hint}")
@@ -1500,7 +1509,10 @@ class SearchView(ttk.Frame):
             code_norm = normalize_code_token(code_ws)
             sub = _score_results(df, code, code_ws, code_norm, exact, by_barras, tok_index)
             if sub.empty:
-                frames.append(_make_nf_row(code, i))
+                nf_row = _make_nf_row(code, i)
+                nf_row["__pos"] = i
+                nf_row["__score"] = -1
+                frames.append(nf_row)
                 nf += 1
             else:
                 sub["__input"] = code
@@ -1514,10 +1526,12 @@ class SearchView(ttk.Frame):
             )
             return
 
-        out = (
-            pd.concat(frames, ignore_index=True)
-              .sort_values(["__pos", "__score"], ascending=[True, False])
-        )
+        out = pd.concat(frames, ignore_index=True)
+        if "__pos" not in out.columns:
+            out["__pos"] = range(len(out))
+        if "__score" not in out.columns:
+            out["__score"] = -1
+        out = out.sort_values(["__pos", "__score"], ascending=[True, False])
         drop_cols = [c for c in ("__score", "__pos") if c in out.columns]
         if drop_cols:
             out = out.drop(columns=drop_cols)
@@ -1525,6 +1539,11 @@ class SearchView(ttk.Frame):
         if raw_query:
             self._history.appendleft(raw_query)
         self.populate(out.head(MAX_RESULTS), emp_id, not_found_count=nf)
+        if nf and not by_barras and any(_looks_like_barcode(c) for c in codes):
+            self.var_status.set(
+                self.var_status.get()
+                + " | Si estas buscando codigos de barra, marca 'Buscar por codigos de barra'."
+            )
 
     def _rows_for_pack_lookup(self):
         if self.last_results is None or self.last_results.empty:
