@@ -1,31 +1,31 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 """
-Buscador + Convertidor con gestiÃ³n de Proveedores integrada (v92-dev)
-- v92-dev: integraciÃ³n inicial de Maestro de Packs.
-    * Carga del Maestro de Packs desde el menÃº principal.
-    * Cruce de artÃ­culos contra la columna "CÃ³digo producto en pack".
+Buscador + Convertidor con gestión de Proveedores integrada (v92-dev)
+- v92-dev: integración inicial de Maestro de Packs.
+    * Carga del Maestro de Packs desde el menú principal.
+    * Cruce de artículos contra la columna "Código producto en pack".
     * Columna "Packs" en el buscador y ventana de packs vinculados.
 
-- v91: motor de bÃºsqueda mejorado â€” 5 mejoras.
+- v91: motor de búsqueda mejorado — 5 mejoras.
     * Ranking de relevancia: resultados ordenados por score (exacto > empieza-con
-      > token exacto > contiene en cÃ³digo > contiene en nombre > barcode).
-    * Tolerancia a errores tipogrÃ¡ficos: cuando no hay resultados, se sugieren
-      cÃ³digos similares usando difflib (stdlib, sin dependencias nuevas).
-    * Ãndice invertido en memoria: precalculado al cargar la base, acelera
-      bÃºsquedas de tokens exactos de O(n) a O(1).
-    * Historial de bÃºsquedas por sesiÃ³n: botÃ³n "Historial" abre ventana con
-      las Ãºltimas 20 bÃºsquedas; doble-click reutiliza cualquiera.
-    * TÃ­tulos de ventana actualizados a v91.
+      > token exacto > contiene en código > contiene en nombre > barcode).
+    * Tolerancia a errores tipográficos: cuando no hay resultados, se sugieren
+      códigos similares usando difflib (stdlib, sin dependencias nuevas).
+    * Índice invertido en memoria: precalculado al cargar la base, acelera
+      búsquedas de tokens exactos de O(n) a O(1).
+    * Historial de búsquedas por sesión: botón "Historial" abre ventana con
+      las últimas 20 búsquedas; doble-click reutiliza cualquiera.
+    * Títulos de ventana actualizados a v91.
 """
 
-# â”€â”€ Historial anterior â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Historial anterior ────────────────────────────────────────────────────────
 # v84: import glob eliminado, guard columnas _parse_catalogo_for_sets,
 #      on_change_db conectado a label BD, self.start_view=None en _clear,
 #      MAX_RESULTS=500, _strip_accents/_normalize_text movidas al bloque util,
 #      found_idx en _apply_striped_rows, ConvertView marcada LEGADO,
-#      asimetrÃ­a cache memoria/disco unificada con _clean_emp.
+#      asimetría cache memoria/disco unificada con _clean_emp.
 
 import sys
 import json
@@ -46,24 +46,24 @@ from tkinter import ttk, messagebox, filedialog
 
 import pandas as pd
 
-# Regex de uso global â€” compilados una vez al importar
-_ws_re        = re.compile(r"\s+")           # colapsa whitespace mÃºltiple
-_RE_DIGITS    = re.compile(r"(\d+)")         # primer grupo de dÃ­gitos
-_RE_NO_DIGITS = re.compile(r"\D")            # elimina no-dÃ­gitos de precios
+# Regex de uso global — compilados una vez al importar
+_ws_re        = re.compile(r"\s+")           # colapsa whitespace múltiple
+_RE_DIGITS    = re.compile(r"(\d+)")         # primer grupo de dígitos
+_RE_NO_DIGITS = re.compile(r"\D")            # elimina no-dígitos de precios
 _RE_PRICE_DEC = re.compile(r"[.,]\d{2}$")   # detecta decimales en precios
 _RE_PRICE_SEP = re.compile(r"[.,]")          # separadores de precio
-_RE_COD_IDENT = re.compile(r"^([A-Za-z]+)(\d+)$")  # cÃ³digos tipo A020267
-_RE_NON_ALNUM = re.compile(r"[^A-Z0-9]")    # elimina no-alfanumÃ©ricos (normalizar cÃ³digo)
+_RE_COD_IDENT = re.compile(r"^([A-Za-z]+)(\d+)$")  # códigos tipo A020267
+_RE_NON_ALNUM = re.compile(r"[^A-Z0-9]")    # elimina no-alfanuméricos (normalizar código)
 
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
-MAX_RESULTS  = 500        # mÃ¡ximo de filas mostradas en el buscador
+MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
 TMP_DIR      = Path(tempfile.gettempdir())  # directorio temporal del sistema
 
-# Cache simple para evitar recargar la BASE DE DATOS desde disco en la misma sesiÃ³n
+# Cache simple para evitar recargar la BASE DE DATOS desde disco en la misma sesión
 _LOAD_DATA_CACHE = {
     'path': None,   # type: Optional[Path]
     'df': None,     # type: Optional[pd.DataFrame]
-    'index': None,  # type: Optional[Dict[str, List[int]]]  Ã­ndice invertido de tokens
+    'index': None,  # type: Optional[Dict[str, List[int]]]  índice invertido de tokens
 }
 
 # =====================================================
@@ -278,7 +278,7 @@ except Exception:
 CACHE_DB_PATH = CACHE_DIR / "base_codigos_cache.pkl"
 CACHE_DB_META = CACHE_DIR / "base_codigos_cache_meta.json"
 
-# Limpieza automÃ¡tica de archivos temporales de BASE DE DATOS al salir
+# Limpieza automática de archivos temporales de BASE DE DATOS al salir
 def _cleanup_tmp_bases():
     try:
         for f in TMP_DIR.glob("MH_TMP_BASE_*.xlsx"):
@@ -311,12 +311,12 @@ def save_prefs(prefs: dict):
         pass
 
 # =====================================================
-#  Proveedores (empresas) â€” persistencia
+#  Proveedores (empresas) — persistencia
 # =====================================================
 def load_empresas() -> Dict[int, str]:
     """
     Carga proveedores desde empresas.json.
-    Si no existe/estÃ¡ vacÃ­o, inicializa con SEED_EMPRESAS y lo guarda.
+    Si no existe/está vacío, inicializa con SEED_EMPRESAS y lo guarda.
     """
     data: Dict[int, str] = {}
     if EMP_PATH.exists():
@@ -347,9 +347,9 @@ def save_empresas(d: Dict[int, str]):
 def ensure_empresas_seed_applied() -> None:
     """Garantiza que empresas.json tenga, al menos, todas las empresas de SEED_EMPRESAS.
 
-    - Si el archivo no existe o estÃ¡ vacÃ­o, se inicializa con la semilla.
+    - Si el archivo no existe o está vacío, se inicializa con la semilla.
     - Si existe, se fusiona manteniendo las empresas que el usuario haya agregado,
-      pero asegurando que todas las de SEED_EMPRESAS estÃ©n presentes y actualizadas.
+      pero asegurando que todas las de SEED_EMPRESAS estén presentes y actualizadas.
     El valor de retorno es None; el efecto es escribir el JSON a disco.
     """
     try:
@@ -374,12 +374,12 @@ def try_read_parts(pattern: str, base_dir: Path):
     return pd.concat(frames, ignore_index=True)
 
 def _norm_lc(s) -> str:
-    """Normaliza texto: sin tildes, minÃºsculas, strip."""
+    """Normaliza texto: sin tildes, minúsculas, strip."""
     s = unicodedata.normalize("NFKD", str(s))
     return "".join(ch for ch in s if not unicodedata.combining(ch)).lower().strip()
 
 def _strip_accents(text: str) -> str:
-    """Elimina diacrÃ­ticos/tildes de un string."""
+    """Elimina diacríticos/tildes de un string."""
     if not isinstance(text, str):
         text = "" if text is None else str(text)
     return "".join(
@@ -388,7 +388,7 @@ def _strip_accents(text: str) -> str:
     )
 
 def _normalize_text(text: str) -> str:
-    """Normaliza texto para bÃºsquedas suaves: sin tildes, lower, sin puntuaciÃ³n."""
+    """Normaliza texto para búsquedas suaves: sin tildes, lower, sin puntuación."""
     s = _strip_accents(text).lower()
     s = s.replace("-", " ").replace("_", " ").replace(".", "").replace(",", "")
     return _ws_re.sub(" ", s).strip()
@@ -396,13 +396,13 @@ def _normalize_text(text: str) -> str:
 _EXCEL_COL_RENAME = {
     "Identificador": "identificador",
     "Código": "codigo",
-    "CÃ³digo": "codigo", "Nombre": "nombre", "Unidad": "unidad",
+    "Código": "codigo", "Nombre": "nombre", "Unidad": "unidad",
     "Código barra interno": "barcode_interno",
-    "CÃ³digo barra interno": "barcode_interno",
+    "Código barra interno": "barcode_interno",
     "Código barra externo": "barcode_externo",
-    "CÃ³digo barra externo": "barcode_externo",
+    "Código barra externo": "barcode_externo",
     "Descripción": "descripcion", "Id Categoría2": "empresa_id_raw",
-    "DescripciÃ³n": "descripcion", "Id CategorÃ­a2": "empresa_id_raw",
+    "Descripción": "descripcion", "Id Categoría2": "empresa_id_raw",
 }
 _EXCEL_KEEP = ["identificador", "codigo", "nombre", "barcode_interno", "barcode_externo", "empresa_id_raw"]
 
@@ -427,7 +427,7 @@ def _parse_excel_base(path) -> pd.DataFrame:
 
 
 def _extract_id(val) -> str:
-    """Extrae primer grupo de dÃ­gitos de val; usado para normalizar empresa_id."""
+    """Extrae primer grupo de dígitos de val; usado para normalizar empresa_id."""
     m = _RE_DIGITS.search(str(val))
     return m.group(1) if m else ""
 
@@ -457,7 +457,7 @@ def load_data(selected_path: Optional[Path]):
     # la cargamos desde CACHE_DB_PATH y evitamos reprocesar.
     # -------------------------------------------------
     try:
-        # Clave de origen: ruta seleccionada o "__AUTO__" si se usa autodetecciÃ³n
+        # Clave de origen: ruta seleccionada o "__AUTO__" si se usa autodetección
         src_key = str(selected_path) if selected_path is not None else "__AUTO__"
         src_mtime = None
         if selected_path is not None and selected_path.exists():
@@ -473,10 +473,10 @@ def load_data(selected_path: Optional[Path]):
                 # Coincide el origen: usamos la base cacheada en disco
                 df = pd.read_pickle(CACHE_DB_PATH)
 
-                # Construir Ã­ndice invertido (rÃ¡pido, siempre desde el df)
+                # Construir índice invertido (rápido, siempre desde el df)
                 tok_idx = _build_search_index(df)
 
-                # Actualizar cache en memoria para esta sesiÃ³n
+                # Actualizar cache en memoria para esta sesión
                 _LOAD_DATA_CACHE["path"] = selected_path
                 _LOAD_DATA_CACHE["df"] = df
                 _LOAD_DATA_CACHE["index"] = tok_idx
@@ -488,7 +488,7 @@ def load_data(selected_path: Optional[Path]):
         pass
 
     # -------------------------------------------------
-    # Cache: si ya cargamos esta BASE en esta sesiÃ³n,
+    # Cache: si ya cargamos esta BASE en esta sesión,
     # devolvemos la copia en memoria y evitamos releer disco.
     # -------------------------------------------------
     cache_df = _LOAD_DATA_CACHE.get("df")
@@ -498,14 +498,14 @@ def load_data(selected_path: Optional[Path]):
         return cache_df, _clean_emp(empresas)  # consistente con retorno de cache disco
 
     used_path: Optional[Path] = selected_path
-    # Si el usuario eligiÃ³ archivo, intentamos con prioridad ese (SOLO leemos "BASE DE DATOS")
+    # Si el usuario eligió archivo, intentamos con prioridad ese (SOLO leemos "BASE DE DATOS")
     if selected_path is not None and selected_path.exists():
         ext = selected_path.suffix.lower()
         if ext in [".xlsm", ".xlsx", ".xls"]:
             try:
                 df = _parse_excel_base(selected_path)
             except (ValueError, KeyError):
-                raise FileNotFoundError("No se encontrÃ³ la hoja 'BASE DE DATOS' en el Excel seleccionado.")
+                raise FileNotFoundError("No se encontró la hoja 'BASE DE DATOS' en el Excel seleccionado.")
         elif ext == ".csv":
             df = pd.read_csv(selected_path, dtype=str).fillna("")
         elif ext == ".gz":
@@ -518,7 +518,7 @@ def load_data(selected_path: Optional[Path]):
             except Exception:
                 pass
 
-    # AutodetecciÃ³n en carpeta (comportamiento histÃ³rico)
+    # Autodetección en carpeta (comportamiento histórico)
     if df is None:
         csv = HERE / "base_codigos.csv"
         if csv.exists():
@@ -543,14 +543,14 @@ def load_data(selected_path: Optional[Path]):
                 except Exception:
                     pass
         if df is None:
-            raise FileNotFoundError("No se pudo cargar la base. Selecciona un archivo vÃ¡lido o coloca base_codigos.csv en la carpeta.")
+            raise FileNotFoundError("No se pudo cargar la base. Selecciona un archivo válido o coloca base_codigos.csv en la carpeta.")
 
     # Normalizaciones
     if "empresa_id" not in df.columns:
         if "empresa_id_raw" in df.columns:
             df["empresa_id"] = df["empresa_id_raw"].apply(_extract_id)
         else:
-            df["empresa_id"] = ""  # columna no presente; se inicializa vacÃ­a
+            df["empresa_id"] = ""  # columna no presente; se inicializa vacía
 
     for c in ["identificador", "codigo", "nombre", "barcode_interno", "barcode_externo", "empresa_id"]:
         if c not in df.columns:
@@ -558,10 +558,10 @@ def load_data(selected_path: Optional[Path]):
         df[c] = df[c].fillna("").astype(str)
 
     df["_codigo_lc"] = df["codigo"].str.lower().str.strip()
-    # CÃ³digo normalizado sÃ³lo en espacios (no se eliminan): colapsa espacios mÃºltiples a uno
+    # Código normalizado sólo en espacios (no se eliminan): colapsa espacios múltiples a uno
     df["_codigo_ws"] = df["codigo"].astype(str).str.strip().apply(lambda s: _ws_re.sub(" ", s))
     df["_nombre_lc"] = df["nombre"].map(_norm_lc)
-    # Tokens multi-cÃ³digo por "/"
+    # Tokens multi-código por "/"
     try:
         df["_codigo_tokens"] = df["codigo"].apply(split_codes_by_slash)
         df["_codigo_tokens_norm"] = df["_codigo_tokens"].apply(to_normalized_tokens)
@@ -571,10 +571,10 @@ def load_data(selected_path: Optional[Path]):
 
     clean_emp = _clean_emp(empresas)
 
-    # Construir Ã­ndice invertido de tokens
+    # Construir índice invertido de tokens
     tok_idx = _build_search_index(df)
 
-    # Actualizar cache con la BASE que se usÃ³ en esta sesiÃ³n
+    # Actualizar cache con la BASE que se usó en esta sesión
     try:
         _LOAD_DATA_CACHE["path"] = used_path
         _LOAD_DATA_CACHE["df"] = df
@@ -582,7 +582,7 @@ def load_data(selected_path: Optional[Path]):
     except Exception:
         pass
 
-    # Guardar cache persistente en disco para prÃ³ximas ejecuciones
+    # Guardar cache persistente en disco para próximas ejecuciones
     try:
         src_key = str(used_path) if used_path is not None else "__AUTO__"
         src_mtime = None
@@ -605,12 +605,12 @@ def sanitize_cell(x) -> str:
     return str(x).replace("\r", " ").replace("\n", " ").replace("\t", " ").strip()
 
 def parse_codes(text: str):
-    """Convierte el texto ingresado en una lista de cÃ³digos.
+    """Convierte el texto ingresado en una lista de códigos.
 
-    NUEVA LÃ“GICA (mÃ¡s simple y acorde a tu uso):
-    - Cada LÃNEA distinta en el cuadro de texto se considera un cÃ³digo.
-    - Dentro de la lÃ­nea, se respeta exactamente lo que escribas (guiones, espacios, etc.).
-    - Las lÃ­neas vacÃ­as se ignoran.
+    NUEVA LÓGICA (más simple y acorde a tu uso):
+    - Cada LÍNEA distinta en el cuadro de texto se considera un código.
+    - Dentro de la línea, se respeta exactamente lo que escribas (guiones, espacios, etc.).
+    - Las líneas vacías se ignoran.
     - Se eliminan duplicados manteniendo el orden.
     """
     seen, out = set(), []
@@ -627,12 +627,12 @@ def _looks_like_barcode(text: str) -> bool:
     return len(digits) >= 6
 
 def normalize_code_token(t: str) -> str:
-    """Normaliza token para comparaciÃ³n: lower, strip y colapsa espacios internos."""
+    """Normaliza token para comparación: lower, strip y colapsa espacios internos."""
     t = str(t).strip().lower()
     return _ws_re.sub(" ", t)
 
 def split_codes_by_slash(segment: str):
-    """Divide un segmento de cÃ³digos por "/", limpiando espacios y omitiendo vacÃ­os."""
+    """Divide un segmento de códigos por "/", limpiando espacios y omitiendo vacíos."""
     if not isinstance(segment, str) or not segment.strip():
         return []
     parts = [p.strip() for p in segment.split("/")]
@@ -645,14 +645,14 @@ def to_normalized_tokens(tokens):
 #  Convertidor
 # =====================================================
 DROP_COLUMNS = [
-    "Precio","Es Servicio","Es Exento","Impuesto EspecÃ­fico","Impuesto Especifico","Impuesto Espec\u00edfico",
+    "Precio","Es Servicio","Es Exento","Impuesto Específico","Impuesto Especifico","Impuesto Espec\u00edfico",
     "Disponible para venta","Activo","Utilidad","TipoUtilidad"
 ]
 TARGET_ORDER = ["Identificador","Código","Nombre","Unidad","Código barra interno","Código barra externo","Descripción","Id Categoría2"]
 
 def _detect_header_row(df_loader, default: int, max_check: int = 30) -> int:
     """Helper interno: carga un DataFrame sin cabecera y busca la fila que
-    contiene 'CÃ³digo' y 'Nombre'. Devuelve su Ã­ndice o `default` si no se halla.
+    contiene 'Código' y 'Nombre'. Devuelve su índice o `default` si no se halla.
     `df_loader` es un callable sin argumentos que devuelve el DataFrame.
     """
     try:
@@ -661,7 +661,7 @@ def _detect_header_row(df_loader, default: int, max_check: int = 30) -> int:
         return default
     for i, row_data in enumerate(df_noh.head(max_check).itertuples(index=False, name=None)):
         row = [str(x).strip() for x in row_data]
-        if "CÃ³digo" in row and "Nombre" in row:
+        if "Código" in row and "Nombre" in row:
             return i
     return default
 
@@ -683,25 +683,25 @@ def detect_header_row_csv(path, max_check=30, sep=',', encoding='utf-8'):
 
 def read_export_any(path: Path, progress_cb=None):
     ext = path.suffix.lower()
-    if progress_cb: progress_cb(5, "Detectando encabezadosâ€¦")
+    if progress_cb: progress_cb(5, "Detectando encabezados…")
     if ext in (".xlsx", ".xls", ".xlsm"):
         header_idx = detect_header_row_excel(path)
-        if progress_cb: progress_cb(10, "Leyendo Excelâ€¦")
+        if progress_cb: progress_cb(10, "Leyendo Excel…")
         df = pd.read_excel(path, sheet_name=0, header=header_idx, dtype=str)
     elif ext == ".csv":
         header_idx = detect_header_row_csv(path)
-        if progress_cb: progress_cb(10, "Leyendo CSVâ€¦")
+        if progress_cb: progress_cb(10, "Leyendo CSV…")
         df = pd.read_csv(path, header=header_idx, dtype=str)
     else:
-        raise ValueError(f"ExtensiÃ³n no soportada: {ext}")
-    if progress_cb: progress_cb(20, "Archivo leÃ­do")
+        raise ValueError(f"Extensión no soportada: {ext}")
+    if progress_cb: progress_cb(20, "Archivo leído")
     return df
 
 def extract_code_from_name(name: str) -> str:
-    """Toma lo que viene DESPUÃ‰S del PRIMER guion '-' (izquierdaâ†’derecha)."""
+    """Toma lo que viene DESPUÉS del PRIMER guion '-' (izquierda→derecha)."""
     s = "" if pd.isna(name) else str(name)
     # Normaliza variantes de guion a '-'
-    s = s.replace('â€“','-').replace('â€”','-').replace('âˆ’','-')
+    s = s.replace('–','-').replace('—','-').replace('−','-')
     if '-' in s:
         _, _, right = s.partition('-')  # primer guion
         return right.strip()
@@ -724,7 +724,7 @@ def _pick_export_col(df: pd.DataFrame, names, fallback_idx=None):
 
 
 def transform_export(df: pd.DataFrame, progress_cb=None) -> pd.DataFrame:
-    if progress_cb: progress_cb(35, "Limpiando columnasâ€¦")
+    if progress_cb: progress_cb(35, "Limpiando columnas…")
     drop_now = [c for c in DROP_COLUMNS if c in df.columns]
     if drop_now:
         df = df.drop(columns=drop_now, errors='ignore')
@@ -750,7 +750,7 @@ def transform_export(df: pd.DataFrame, progress_cb=None) -> pd.DataFrame:
     if missing:
         raise ValueError(f"No se encontraron columnas requeridas en el export: {missing}")
 
-    if progress_cb: progress_cb(45, "Reordenando y renombrandoâ€¦")
+    if progress_cb: progress_cb(45, "Reordenando y renombrando…")
     out = pd.DataFrame({
         "Identificador": df[col_ident],
         "Código": df[col_ident],
@@ -762,25 +762,25 @@ def transform_export(df: pd.DataFrame, progress_cb=None) -> pd.DataFrame:
         "Id Categoría2": df[col_cat],
     })
 
-    if progress_cb: progress_cb(55, "Extrayendo CÃ“DIGO desde NOMBREâ€¦")
+    if progress_cb: progress_cb(55, "Extrayendo CÓDIGO desde NOMBRE…")
     out["Código"] = out["Nombre"].map(extract_code_from_name)
 
-    if progress_cb: progress_cb(65, "Formateando Id CategorÃ­a2â€¦")
+    if progress_cb: progress_cb(65, "Formateando Id Categoría2…")
     out["Id Categoría2"] = out["Id Categoría2"].map(fmt_id)
 
-    if progress_cb: progress_cb(75, "Ajustando estructura finalâ€¦")
+    if progress_cb: progress_cb(75, "Ajustando estructura final…")
     out = out[TARGET_ORDER]
     out = out.iloc[4:].reset_index(drop=True)
 
     for c in out.columns:
         out[c] = out[c].astype(str).replace({"nan": ""})
-    if progress_cb: progress_cb(80, "TransformaciÃ³n completada")
+    if progress_cb: progress_cb(80, "Transformación completada")
     return out
 
 def _build_search_index(df: pd.DataFrame) -> Dict[str, List[int]]:
-    """Construye Ã­ndice invertido: token_normalizado â†’ lista de posiciones enteras en df.
+    """Construye índice invertido: token_normalizado → lista de posiciones enteras en df.
 
-    Las posiciones son labels del Ã­ndice original del DataFrame (no posiciones relativas),
+    Las posiciones son labels del índice original del DataFrame (no posiciones relativas),
     lo que permite usar df.index.isin() correctamente incluso con DataFrames filtrados.
     """
     idx: Dict[str, List[int]] = {}
@@ -797,17 +797,17 @@ def _score_results(df: pd.DataFrame, q_raw: str, q_ws: str, q_norm: str,
     """Calcula scores de relevancia por fila y devuelve df filtrado y ordenado.
 
     Scores (de mayor a menor relevancia):
-        100 â€” cÃ³digo exacto completo
-         80 â€” cÃ³digo empieza con el tÃ©rmino  (solo modo no-exacto)
-         60 â€” token exacto dentro de cÃ³digo multi-parte
-         40 â€” cÃ³digo contiene el tÃ©rmino (no-exacto)
-         35 â€” token contiene el tÃ©rmino, mÃ­n. 3 chars (no-exacto)
-         20 â€” nombre contiene el tÃ©rmino (no-exacto)
-         70 â€” barcode exacto  (modo exacto)
-         10 â€” barcode contiene (modo no-exacto)
+        100 — código exacto completo
+         80 — código empieza con el término  (solo modo no-exacto)
+         60 — token exacto dentro de código multi-parte
+         40 — código contiene el término (no-exacto)
+         35 — token contiene el término, mín. 3 chars (no-exacto)
+         20 — nombre contiene el término (no-exacto)
+         70 — barcode exacto  (modo exacto)
+         10 — barcode contiene (modo no-exacto)
 
     Returns:
-        DataFrame con columna __score, ordenado score desc. VacÃ­o si sin resultados.
+        DataFrame con columna __score, ordenado score desc. Vacío si sin resultados.
     """
     q_ws_lc = q_ws.lower()
     q_name  = _norm_lc(q_ws)
@@ -872,10 +872,10 @@ def _score_results(df: pd.DataFrame, q_raw: str, q_ws: str, q_norm: str,
 
 
 def _find_fuzzy_suggestions(q_norm: str, df: pd.DataFrame, n: int = 3) -> List[str]:
-    """Busca cÃ³digos similares a q_norm usando difflib (stdlib).
+    """Busca códigos similares a q_norm usando difflib (stdlib).
 
     Filtra candidatos por primera letra para mantener rendimiento en bases grandes.
-    Retorna lista de hasta n cÃ³digos similares, vacÃ­a si q_norm < 3 chars.
+    Retorna lista de hasta n códigos similares, vacía si q_norm < 3 chars.
     """
     if len(q_norm) < 3:
         return []
@@ -890,13 +890,13 @@ def _find_fuzzy_suggestions(q_norm: str, df: pd.DataFrame, n: int = 3) -> List[s
 
 
 def _filter_combobox_choices(term: str, choices: list, combo, result_var) -> None:
-    """Filtra en vivo las opciones de un ttk.Combobox segÃºn el tÃ©rmino buscado.
+    """Filtra en vivo las opciones de un ttk.Combobox según el término buscado.
 
-    Si el tÃ©rmino no coincide con nada, restaura la lista completa.
-    Mantiene la selecciÃ³n actual si sigue estando en la lista filtrada.
+    Si el término no coincide con nada, restaura la lista completa.
+    Mantiene la selección actual si sigue estando en la lista filtrada.
 
     Args:
-        term       : texto de bÃºsqueda ya en minÃºsculas y sin espacios extra
+        term       : texto de búsqueda ya en minúsculas y sin espacios extra
         choices    : lista completa de opciones del combobox
         combo      : widget ttk.Combobox a actualizar
         result_var : StringVar vinculado al combobox
@@ -918,7 +918,7 @@ def _filter_combobox_choices(term: str, choices: list, combo, result_var) -> Non
 
 
 # =====================================================
-#  Vistas (Frames) y NavegaciÃ³n
+#  Vistas (Frames) y Navegación
 # =====================================================
 
 def _norm_pack_code(value: str) -> str:
@@ -1008,17 +1008,17 @@ class StartView(ttk.Frame):
         packs_cargado: bool,
     ):
         super().__init__(master)
-        self.master.title("Buscador de CÃ³digos â€” MERCADO HOUSE")
+        self.master.title("Buscador de Códigos — MERCADO HOUSE")
         self.pack(fill="both", expand=True, padx=20, pady=20)
 
-        title = ttk.Label(self, text="Â¿QuÃ© deseas hacer?", font=("TkDefaultFont", 14, "bold"))
+        title = ttk.Label(self, text="¿Qué deseas hacer?", font=("TkDefaultFont", 14, "bold"))
         title.pack(pady=(0, 12))
 
         btns = ttk.Frame(self)
         btns.pack(pady=8)
 
         # Guardamos referencias a los botones que dependen del listado
-        self.btn_buscar = ttk.Button(btns, text="Buscar CÃ³digo", command=on_choose_db)
+        self.btn_buscar = ttk.Button(btns, text="Buscar Código", command=on_choose_db)
         self.btn_buscar.pack(side="left", padx=8, ipadx=10, ipady=6)
 
         self.btn_prov = ttk.Button(btns, text="Administrar proveedores", command=on_manage_prov)
@@ -1030,7 +1030,7 @@ class StartView(ttk.Frame):
         self.btn_ingreso = ttk.Button(btns, text="INGRESO MASIVO DE ARTICULOS", command=on_open_ingreso_masivo)
         self.btn_ingreso.pack(side="left", padx=8, ipadx=10, ipady=6)
 
-        # BotÃ³n central para cargar el listado al inicio
+        # Botón central para cargar el listado al inicio
         self.btn_cargar_listado = ttk.Button(
             self,
             text="Primero cargue el LISTADO DE ARTICULOS para usar el programa",
@@ -1055,11 +1055,11 @@ class StartView(ttk.Frame):
 
     @staticmethod
     def _estado_texto(cargado: bool) -> str:
-        return ("Listado de artÃ­culos: CARGADO" if cargado
-                else "Listado de artÃ­culos: NO cargado (los mÃ³dulos que dependen de Ã©l estÃ¡n deshabilitados)")
+        return ("Listado de artículos: CARGADO" if cargado
+                else "Listado de artículos: NO cargado (los módulos que dependen de él están deshabilitados)")
 
     def set_listado_cargado(self, cargado: bool):
-        """Habilita/deshabilita los botones que necesitan el listado de artÃ­culos
+        """Habilita/deshabilita los botones que necesitan el listado de artículos
         y actualiza el texto de estado en pantalla."""
         state_dep = "normal" if cargado else "disabled"
         self.btn_buscar.config(state=state_dep)
@@ -1091,7 +1091,7 @@ class ProvidersView(ttk.Frame):
         self.data: Dict[int,str] = load_empresas()
 
         top = ttk.Frame(self); top.pack(fill="x")
-        ttk.Button(top, text="âŸµ Volver al inicio", command=self._back_home).pack(side="left")
+        ttk.Button(top, text="⟵ Volver al inicio", command=self._back_home).pack(side="left")
 
         mid = ttk.Frame(self); mid.pack(fill="both", expand=True, pady=8)
         self.tree = ttk.Treeview(mid, columns=("id","nombre"), show="headings", selectmode="browse", height=20)
@@ -1145,9 +1145,9 @@ class ProvidersView(ttk.Frame):
         id_txt = self.ent_id.get().strip()
         name = self.ent_nombre.get().strip()
         if not id_txt.isdigit():
-            messagebox.showwarning("AtenciÃ³n", "El Id debe ser un nÃºmero entero."); return
+            messagebox.showwarning("Atención", "El Id debe ser un número entero."); return
         if not name:
-            messagebox.showwarning("AtenciÃ³n", "El nombre no puede estar vacÃ­o."); return
+            messagebox.showwarning("Atención", "El nombre no puede estar vacío."); return
         iid = int(id_txt)
         exists = iid in self.data
         self.data[iid] = name
@@ -1160,7 +1160,7 @@ class ProvidersView(ttk.Frame):
         if not sel:
             messagebox.showinfo("Info", "Selecciona un proveedor para eliminar."); return
         iid, name = self.tree.item(sel[0], "values")
-        if messagebox.askyesno("Confirmar", f"Â¿Eliminar '{name}' (Id. {iid})?"):
+        if messagebox.askyesno("Confirmar", f"¿Eliminar '{name}' (Id. {iid})?"):
             try:
                 iid_int = int(iid)
                 if iid_int in self.data:
@@ -1172,14 +1172,14 @@ class ProvidersView(ttk.Frame):
                 pass
 
 class SearchView(ttk.Frame):
-    """Buscador con barra superior para el botÃ³n Volver (no desplaza el contenido)."""
+    """Buscador con barra superior para el botón Volver (no desplaza el contenido)."""
     def __init__(self, master, go_home_cb, initial_db_path: Optional[Path], packs_path: Optional[Path] = None, packs_index: Optional[dict] = None):
         super().__init__(master)
-        self.master.title("Buscador de CÃ³digos â€” MERCADO HOUSE (v92-dev)")
+        self.master.title("Buscador de Códigos — MERCADO HOUSE (v92-dev)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
         self.prefs = load_prefs()
-        self.db_path: Optional[Path] = None  # inicializado explÃ­citamente
+        self.db_path: Optional[Path] = None  # inicializado explícitamente
 
         self.packs_path = packs_path
         self.packs_index = packs_index or {}
@@ -1198,14 +1198,14 @@ class SearchView(ttk.Frame):
         # ===== Barra superior SOLO con "Volver" =====
         header = ttk.Frame(self, padding=(10,10,10,0))
         header.pack(side=tk.TOP, fill=tk.X)
-        ttk.Button(header, text="Volver al MenÃº", command=self._back_home).pack(side="left")
+        ttk.Button(header, text="Volver al Menú", command=self._back_home).pack(side="left")
 
         # ===== Contenido del buscador =====
         content = ttk.Frame(self, padding=10)
         content.pack(side=tk.TOP, fill=tk.X)
         content.columnconfigure(0, weight=1)
 
-        ttk.Label(content, text="CÃ³digo(s) (pega varios: uno por lÃ­nea o separados por coma/tab):").grid(row=0, column=0, sticky="w")
+        ttk.Label(content, text="Código(s) (pega varios: uno por línea o separados por coma/tab):").grid(row=0, column=0, sticky="w")
         area = ttk.Frame(content); area.grid(row=1, column=0, sticky="ew", pady=(4,0))
         area.columnconfigure(0, weight=1)
         self.txt_query = tk.Text(area, height=5, wrap="word")
@@ -1217,8 +1217,8 @@ class SearchView(ttk.Frame):
         opts = ttk.Frame(content); opts.grid(row=2, column=0, sticky="w", pady=(6,0))
         self.exact = tk.BooleanVar(value=bool(self.prefs.get("exact", True)))
         self.by_barras = tk.BooleanVar(value=bool(self.prefs.get("by_barras", False)))
-        ttk.Checkbutton(opts, text="Coincidencia exacta (cÃ³digo)", variable=self.exact).pack(side="left")
-        ttk.Checkbutton(opts, text="Buscar por cÃ³digos de barra", variable=self.by_barras).pack(side="left", padx=(12,0))
+        ttk.Checkbutton(opts, text="Coincidencia exacta (código)", variable=self.exact).pack(side="left")
+        ttk.Checkbutton(opts, text="Buscar por códigos de barra", variable=self.by_barras).pack(side="left", padx=(12,0))
 
         row3 = ttk.Frame(content); row3.grid(row=3, column=0, sticky="w", pady=(8,0))
         ttk.Label(row3, text="Empresa:").pack(side="left")
@@ -1231,10 +1231,10 @@ class SearchView(ttk.Frame):
         ent_emp.pack(side="left")
         ent_emp.bind("<KeyRelease>", self.on_emp_search)
 
-        self.empresas_choices = ["â€” Cualquiera â€”"] + [f"{v} (Id. {k})" for k, v in sorted(self.empresas.items(), key=lambda x: x[1].lower())]
+        self.empresas_choices = ["— Cualquiera —"] + [f"{v} (Id. {k})" for k, v in sorted(self.empresas.items(), key=lambda x: x[1].lower())]
         self.cbo_emp = ttk.Combobox(row3, textvariable=self.var_emp, values=self.empresas_choices, width=40, state="readonly")
         self.cbo_emp.pack(side="left", padx=8)
-        self.cbo_emp.set(self.prefs.get("empresa_display", "â€” Cualquiera â€”"))
+        self.cbo_emp.set(self.prefs.get("empresa_display", "— Cualquiera —"))
         self.cbo_emp.bind("<Key>", self.on_emp_key)
 
         btns = ttk.Frame(row3)
@@ -1244,15 +1244,15 @@ class SearchView(ttk.Frame):
         ttk.Button(btns, text="Limpiar", command=self.on_clear).pack(side=tk.LEFT, padx=4)
         ttk.Button(btns, text="Historial", command=self._show_history).pack(side=tk.LEFT, padx=4)
         ttk.Button(btns, text="Ver packs vinculados", command=self.show_linked_packs).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btns, text="Copiar cÃ³d.barra (internos)", command=self.copy_barcodes_internos).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btns, text="Copiar cÃ³d.barra (externos)", command=self.copy_barcodes_externos).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btns, text="Copiar cód.barra (internos)", command=self.copy_barcodes_internos).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btns, text="Copiar cód.barra (externos)", command=self.copy_barcodes_externos).pack(side=tk.LEFT, padx=4)
         ttk.Button(btns, text="Copiar nombres + cod.barra", command=self.copy_nombre_interno).pack(side=tk.LEFT, padx=4)
         ttk.Button(btns, text="Copiar nombres", command=self.copy_nombres).pack(side=tk.LEFT, padx=4)
         ttk.Button(btns, text="Copiar NO ENCONTRADOS", command=self.copy_not_found_inputs).pack(side=tk.LEFT, padx=4)
 
         cols = ("codigo","nombre","barcode_interno","barcode_externo","empresa","packs","__input")
         self.tree = ttk.Treeview(self, columns=cols, show="headings", selectmode="extended")
-        for c, t in zip(cols, ["CÃ³digo","Nombre","CÃ³d. barra interno","CÃ³d. barra externo","Empresa","CÃ³digo buscado"]):
+        for c, t in zip(cols, ["Código","Nombre","Cód. barra interno","Cód. barra externo","Empresa","Código buscado"]):
             self.tree.heading(c, text=t)
         self.tree.heading("packs", text="Packs")
         self.tree.heading("__input", text="Codigo buscado")
@@ -1289,7 +1289,7 @@ class SearchView(ttk.Frame):
         self.txt_query.focus_set()
 
     def on_emp_search(self, event=None):
-        """Filtra en vivo la lista de proveedores en el combobox segÃºn el mini buscador."""
+        """Filtra en vivo la lista de proveedores en el combobox según el mini buscador."""
         _filter_combobox_choices(
             self.var_emp_search.get().strip().lower(),
             self.empresas_choices,
@@ -1311,7 +1311,7 @@ class SearchView(ttk.Frame):
 
     # ---- Helpers buscador ----
     def on_change_db(self):
-        """Permite seleccionar una nueva base de datos sin reiniciar la aplicaciÃ³n."""
+        """Permite seleccionar una nueva base de datos sin reiniciar la aplicación."""
         newf = filedialog.askopenfilename(
             title="Selecciona la base de datos (Excel/CSV)",
             initialdir=self.prefs.get("last_dir"),
@@ -1327,9 +1327,9 @@ class SearchView(ttk.Frame):
         self.db_path = newp
         self.df, self.empresas = df, emp
         old = self.cbo_emp.get()
-        self.empresas_choices = ["â€” Cualquiera â€”"] + [f"{v} (Id. {k})" for k, v in sorted(self.empresas.items(), key=lambda x: x[1].lower())]
+        self.empresas_choices = ["— Cualquiera —"] + [f"{v} (Id. {k})" for k, v in sorted(self.empresas.items(), key=lambda x: x[1].lower())]
         self.cbo_emp["values"] = self.empresas_choices
-        self.cbo_emp.set(old if old in self.empresas_choices else "â€” Cualquiera â€”")
+        self.cbo_emp.set(old if old in self.empresas_choices else "— Cualquiera —")
         self.on_clear()
         self.var_status.set(self.status_db_text)
         try:
@@ -1355,7 +1355,7 @@ class SearchView(ttk.Frame):
         start = (cur + 1) % len(vals) if cur is not None and cur >= 0 else 0
         for offset in range(len(vals)):
             k = (start + offset) % len(vals)
-            if _norm_lc(vals[k].lstrip("â€” ").strip()).startswith(target):
+            if _norm_lc(vals[k].lstrip("— ").strip()).startswith(target):
                 try:
                     self.cbo_emp.current(k)
                 except Exception:
@@ -1363,7 +1363,7 @@ class SearchView(ttk.Frame):
                 return
 
     def show_context_menu(self, event):
-        """Muestra el menÃº contextual al hacer click derecho en la tabla."""
+        """Muestra el menú contextual al hacer click derecho en la tabla."""
         try:
             iid = self.tree.identify_row(event.y)
             if iid:
@@ -1389,10 +1389,10 @@ class SearchView(ttk.Frame):
         """
         sels = self.tree.selection()
         if not sels:
-            messagebox.showinfo("Info", "Selecciona una o mÃ¡s filas para eliminar de la lista.")
+            messagebox.showinfo("Info", "Selecciona una o más filas para eliminar de la lista.")
             return
 
-        # Mapear cada item visual a su Ã­ndice en last_results
+        # Mapear cada item visual a su índice en last_results
         children = list(self.tree.get_children())
         remove_set = {i for i, iid in enumerate(children) if iid in sels}
         if not remove_set or self.last_results is None or self.last_results.empty:
@@ -1401,7 +1401,7 @@ class SearchView(ttk.Frame):
         # Construir nuevo DataFrame sin esas filas
         keep_indices = [i for i in range(len(self.last_results)) if i not in remove_set]
         if not keep_indices:
-            # Si el usuario eliminÃ³ todo, dejamos resultados vacÃ­os
+            # Si el usuario eliminó todo, dejamos resultados vacíos
             self.last_results = self.last_results.head(0).copy()
         else:
             self.last_results = self.last_results.iloc[keep_indices].reset_index(drop=True)
@@ -1417,23 +1417,23 @@ class SearchView(ttk.Frame):
         self.populate(self.last_results, emp_id=None, not_found_count=nf_count)
 
     def on_clear(self):
-        """Limpia el cuadro de bÃºsqueda, los resultados y restaura el estado inicial."""
+        """Limpia el cuadro de búsqueda, los resultados y restaura el estado inicial."""
         self.txt_query.delete("1.0", "end")
-        prefer = self.prefs.get("empresa_display", "â€” Cualquiera â€”")
-        self.cbo_emp.set(prefer if prefer in self.cbo_emp["values"] else "â€” Cualquiera â€”")
+        prefer = self.prefs.get("empresa_display", "— Cualquiera —")
+        self.cbo_emp.set(prefer if prefer in self.cbo_emp["values"] else "— Cualquiera —")
         for x in self.tree.get_children(): self.tree.delete(x)
         self.var_status.set(self.status_db_text)
         self.last_results = pd.DataFrame()
 
     def _show_history(self):
-        """Abre una ventana con el historial de bÃºsquedas de la sesiÃ³n."""
+        """Abre una ventana con el historial de búsquedas de la sesión."""
         if not self._history:
-            messagebox.showinfo("Historial", "No hay bÃºsquedas en el historial todavÃ­a.")
+            messagebox.showinfo("Historial", "No hay búsquedas en el historial todavía.")
             return
         top = tk.Toplevel(self)
-        top.title("Historial de bÃºsquedas")
+        top.title("Historial de búsquedas")
         top.resizable(False, False)
-        ttk.Label(top, text="Doble clic para repetir la bÃºsqueda:").pack(padx=12, pady=(10,4), anchor="w")
+        ttk.Label(top, text="Doble clic para repetir la búsqueda:").pack(padx=12, pady=(10,4), anchor="w")
         lb = tk.Listbox(top, width=60, height=min(len(self._history), 15), selectmode="browse")
         lb.pack(padx=12, pady=(0,4), fill="both", expand=True)
         for entry in self._history:
@@ -1458,12 +1458,12 @@ class SearchView(ttk.Frame):
     def _filter_by_empresa(self, df, force_general=False):
         emp_id = self._selected_emp_id()
         if not force_general and emp_id is not None:
-            # empresa_id ya contiene solo dÃ­gitos (normalizado en load_data)
+            # empresa_id ya contiene solo dígitos (normalizado en load_data)
             df = df[df["empresa_id"] == emp_id]
         return df, emp_id
 
     def _display_emp(self, eid):
-        # empresa_id siempre contiene solo dÃ­gitos tras load_data/_extract_id
+        # empresa_id siempre contiene solo dígitos tras load_data/_extract_id
         num = str(eid).strip()
         if not num or not num.isdigit():
             return ""
@@ -1480,7 +1480,7 @@ class SearchView(ttk.Frame):
         return f"Si ({len(records)})" if records else "No"
 
     def populate(self, df, emp_id, not_found_count=0):
-        """Rellena el Treeview con los resultados de bÃºsqueda y actualiza la barra de estado."""
+        """Rellena el Treeview con los resultados de búsqueda y actualiza la barra de estado."""
         for x in self.tree.get_children(): self.tree.delete(x)
         total = len(df)
 
@@ -1491,7 +1491,7 @@ class SearchView(ttk.Frame):
                 counts = inp_series[inp_series != ""].value_counts()
                 dup_inputs = set(counts[counts > 1].index)
 
-        # Extraer columnas como listas (mucho mÃ¡s rÃ¡pido que iterrows)
+        # Extraer columnas como listas (mucho más rápido que iterrows)
         col_ident     = df["identificador"].fillna("").astype(str).tolist() if "identificador" in df.columns else [""] * total
         col_codigo    = df["codigo"].fillna("").astype(str).tolist() if "codigo" in df.columns else [""] * total
         col_nombre    = df["nombre"].fillna("").astype(str).tolist() if "nombre" in df.columns else [""] * total
@@ -1511,14 +1511,14 @@ class SearchView(ttk.Frame):
 
         extra = ""
         if not_found_count: extra += f" | No encontrados: {not_found_count}"
-        if dup_inputs: extra += f" | Duplicados (por cÃ³digo ingresado): {len(dup_inputs)}"
+        if dup_inputs: extra += f" | Duplicados (por código ingresado): {len(dup_inputs)}"
         if self.packs_index:
             extra += " | Packs activos"
         self.var_status.set(f"{self.status_db_text} | Resultados: {total} fila(s). Mostrando hasta {MAX_RESULTS}.{extra}")
         self.last_results = df
 
     def on_search(self, force_general=False):
-        """Ejecuta la bÃºsqueda con los cÃ³digos ingresados y popula la tabla."""
+        """Ejecuta la búsqueda con los códigos ingresados y popula la tabla."""
         raw   = self.txt_query.get("1.0", "end")
         codes = parse_codes(raw)
         df, emp_id = self._filter_by_empresa(self.df, force_general=force_general)
@@ -1543,7 +1543,7 @@ class SearchView(ttk.Frame):
                 else:
                     suggs = _find_fuzzy_suggestions(q_norm, df)
                 if suggs:
-                    hint = "  Â¿Quisiste decir: " + ", ".join(suggs) + "?"
+                    hint = "  ¿Quisiste decir: " + ", ".join(suggs) + "?"
                 elif not (not by_barras and _looks_like_barcode(q)):
                     hint = ""
                 self.populate(_make_nf_row(q, 0), emp_id, not_found_count=1)
@@ -1726,12 +1726,12 @@ class SearchView(ttk.Frame):
     def _require_results(self) -> bool:
         """Devuelve True si hay resultados; muestra aviso y devuelve False si no."""
         if self.last_results is None or self.last_results.empty:
-            messagebox.showwarning("AtenciÃ³n", "No hay resultados para copiar. Realiza una bÃºsqueda primero.")
+            messagebox.showwarning("Atención", "No hay resultados para copiar. Realiza una búsqueda primero.")
             return False
         return True
 
     def _copy_barcode_col(self, col: str, label: str):
-        """Helper para copiar una columna de cÃ³digos de barra de last_results."""
+        """Helper para copiar una columna de códigos de barra de last_results."""
         if not self._require_results():
             return
         lines = self.last_results.get(col, pd.Series(dtype=str)).fillna("").astype(str).tolist()
@@ -1741,13 +1741,13 @@ class SearchView(ttk.Frame):
         )
 
     def copy_barcodes_internos(self):
-        self._copy_barcode_col("barcode_interno", "cÃ³digos internos")
+        self._copy_barcode_col("barcode_interno", "códigos internos")
 
     def copy_barcodes_externos(self):
-        self._copy_barcode_col("barcode_externo", "cÃ³digos externos")
+        self._copy_barcode_col("barcode_externo", "códigos externos")
 
     def copy_nombre_interno(self):
-        """Copia nombre + cÃ³digo de barra interno de cada resultado al portapapeles."""
+        """Copia nombre + código de barra interno de cada resultado al portapapeles."""
         if not self._require_results():
             return
         df = self.last_results
@@ -1774,25 +1774,25 @@ class SearchView(ttk.Frame):
         )
 
     def copy_not_found_inputs(self):
-        """Copia los cÃ³digos buscados que no se encontraron al portapapeles."""
+        """Copia los códigos buscados que no se encontraron al portapapeles."""
         if not self._require_results():
             return
         if "__input" not in self.last_results.columns:
-            messagebox.showwarning("AtenciÃ³n", "No hay resultados 'No encontrado' para copiar.")
+            messagebox.showwarning("Atención", "No hay resultados 'No encontrado' para copiar.")
             return
         nf = self.last_results[self.last_results["nombre"].astype(str) == "No encontrado"]
         if nf.empty:
-            messagebox.showinfo("Info", "No hay cÃ³digos 'No encontrado' en los resultados."); return
+            messagebox.showinfo("Info", "No hay códigos 'No encontrado' en los resultados."); return
         lines = nf["__input"].astype(str).tolist()
         self._copy_to_clipboard(
             JOIN_SEP.join(lines),
-            f"{self.status_db_text} | Copiados {len(lines)} cÃ³digo(s) NO ENCONTRADOS.",
+            f"{self.status_db_text} | Copiados {len(lines)} código(s) NO ENCONTRADOS.",
         )
 
     def export_csv(self):
         """Exporta los resultados actuales a un archivo CSV elegido por el usuario."""
         if self.last_results is None or self.last_results.empty:
-            messagebox.showwarning("AtenciÃ³n", "No hay resultados para exportar. Realiza una bÃºsqueda primero."); return
+            messagebox.showwarning("Atención", "No hay resultados para exportar. Realiza una búsqueda primero."); return
         path = filedialog.asksaveasfilename(
             title="Guardar resultados como CSV", defaultextension=".csv",
             filetypes=[("CSV","*.csv")], initialdir=self.prefs.get("last_dir")
@@ -1811,13 +1811,13 @@ class SearchView(ttk.Frame):
 class ConvertView(ttk.Frame):
     """Convertidor Tivendo -> Excel con progreso; escribe LISTA desde empresas.json.
 
-    LEGADO: esta clase no estÃ¡ conectada al menÃº principal (RootApp).
+    LEGADO: esta clase no está conectada al menú principal (RootApp).
     La funcionalidad equivalente es AutoBuildDBWindow + transform_export.
     Se conserva por si se desea reactivar como vista independiente.
     """
     def __init__(self, master, go_home_cb, open_in_search_cb):
         super().__init__(master)
-        self.master.title("Crear base de datos (Tivendo â†’ Excel)")
+        self.master.title("Crear base de datos (Tivendo → Excel)")
         self.pack(fill="both", expand=True, padx=16, pady=16)
         self.go_home_cb = go_home_cb
         self.open_in_search_cb = open_in_search_cb
@@ -1825,11 +1825,11 @@ class ConvertView(ttk.Frame):
         self.last_output: Optional[Path] = None
 
         top = ttk.Frame(self); top.pack(fill="x")
-        ttk.Button(top, text="âŸµ Volver al inicio", command=self._back_home).pack(side="left")
+        ttk.Button(top, text="⟵ Volver al inicio", command=self._back_home).pack(side="left")
         ttk.Label(top, text="Convertidor (BASE DE DATOS)").pack(side="left", padx=10)
 
         ttk.Button(self, text="Seleccionar export de Tivendo", command=self.select_file).pack(pady=(16,8))
-        self.lbl_file = ttk.Label(self, text="NingÃºn archivo seleccionado", anchor="center"); self.lbl_file.pack(padx=12, fill="x")
+        self.lbl_file = ttk.Label(self, text="Ningún archivo seleccionado", anchor="center"); self.lbl_file.pack(padx=12, fill="x")
 
         self.btn_convert = ttk.Button(self, text="Convertir", command=self.convert_action, state="disabled")
         self.btn_convert.pack(pady=(12,8))
@@ -1875,22 +1875,22 @@ class ConvertView(ttk.Frame):
         )
         if not out_file: return
 
-        self.btn_convert.config(state="disabled"); self.status.config(text="Preparandoâ€¦"); self.set_progress(0, "Listo para convertirâ€¦")
+        self.btn_convert.config(state="disabled"); self.status.config(text="Preparando…"); self.set_progress(0, "Listo para convertir…")
 
         def work():
             try:
-                self.after(0, lambda: self.set_progress(5, "Detectando encabezadosâ€¦"))
+                self.after(0, lambda: self.set_progress(5, "Detectando encabezados…"))
                 df = read_export_any(self.selected_path, progress_cb=lambda p,t: self.after(0, lambda: self.set_progress(p,t)))
                 out_df = transform_export(df, progress_cb=lambda p,t: self.after(0, lambda: self.set_progress(p,t)))
                 empresas = load_empresas(); lista_df = empresas_df_for_excel(empresas)
-                self.after(0, lambda: self.set_progress(85, "Escribiendo Excelâ€¦"))
+                self.after(0, lambda: self.set_progress(85, "Escribiendo Excel…"))
                 with pd.ExcelWriter(out_file, engine="openpyxl") as writer:
                     out_df.to_excel(writer, sheet_name="BASE DE DATOS", index=False)
                     lista_df.to_excel(writer, sheet_name="LISTA", index=False)
                 self.last_output = Path(out_file)
                 self.after(0, lambda: self.on_done(True, f"Archivo generado:\n{out_file}"))
             except Exception as e:
-                self.after(0, lambda: self.on_done(False, f"OcurriÃ³ un error:\n{e}"))
+                self.after(0, lambda: self.on_done(False, f"Ocurrió un error:\n{e}"))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -1906,7 +1906,7 @@ class ConvertView(ttk.Frame):
         if self.last_output and self.last_output.exists():
             self.destroy(); self.open_in_search_cb(self.last_output)
         else:
-            messagebox.showwarning("AtenciÃ³n", "No hay un archivo generado para abrir en el buscador.")
+            messagebox.showwarning("Atención", "No hay un archivo generado para abrir en el buscador.")
 
 # =====================================================
 #  App principal
@@ -1914,17 +1914,17 @@ class ConvertView(ttk.Frame):
 
 class AutoBuildDBWindow(tk.Toplevel):
     """
-    Ventana mÃ­nima con barra de progreso para crear la BASE DE DATOS
-    en forma automÃ¡tica a partir del EXCEL de listado de artÃ­culos.
+    Ventana mínima con barra de progreso para crear la BASE DE DATOS
+    en forma automática a partir del EXCEL de listado de artículos.
     """
     def __init__(self, master, listado_path: Path, on_done):
         super().__init__(master)
-        self.title("Creando base de datosâ€¦")
+        self.title("Creando base de datos…")
         self.resizable(False, False)
         self.listado_path = listado_path
         self.on_done = on_done  # callback Path|None
 
-        self.grab_set()  # bloquear interacciÃ³n con la ventana principal mientras trabaja
+        self.grab_set()  # bloquear interacción con la ventana principal mientras trabaja
 
         frm = ttk.Frame(self, padding=16)
         frm.pack(fill="both", expand=True)
@@ -1944,10 +1944,10 @@ class AutoBuildDBWindow(tk.Toplevel):
         self.lbl_pct = ttk.Label(frm_bar, text="0%")
         self.lbl_pct.pack(side="left", padx=(8, 0))
 
-        self.lbl_status = ttk.Label(frm, text="Preparandoâ€¦", foreground="#555")
+        self.lbl_status = ttk.Label(frm, text="Preparando…", foreground="#555")
         self.lbl_status.pack(anchor="w", pady=(4, 0))
 
-        # Ajuste tamaÃ±o aproximado
+        # Ajuste tamaño aproximado
         self.update_idletasks()
         self.minsize(self.winfo_width(), self.winfo_height())
 
@@ -1964,11 +1964,11 @@ class AutoBuildDBWindow(tk.Toplevel):
     def _start_work(self):
         def work():
             try:
-                # Reutilizamos la misma lÃ³gica que el ConvertView
+                # Reutilizamos la misma lógica que el ConvertView
                 def cb(p, t):
                     self.after(0, lambda: self._set_progress(p, t or ""))
 
-                self.after(0, lambda: self._set_progress(5, "Leyendo archivo de origenâ€¦"))
+                self.after(0, lambda: self._set_progress(5, "Leyendo archivo de origen…"))
                 df = read_export_any(self.listado_path, progress_cb=cb)
                 out_df = transform_export(df, progress_cb=cb)
                 empresas = load_empresas()
@@ -1977,7 +1977,7 @@ class AutoBuildDBWindow(tk.Toplevel):
                 # Nombre de salida en carpeta temporal del sistema
                 out_file = TMP_DIR / f"MH_TMP_BASE_{self.listado_path.stem}.xlsx"
 
-                self.after(0, lambda: self._set_progress(90, "Escribiendo archivo Excelâ€¦"))
+                self.after(0, lambda: self._set_progress(90, "Escribiendo archivo Excel…"))
                 with pd.ExcelWriter(out_file, engine="openpyxl") as writer:
                     out_df.to_excel(writer, sheet_name="BASE DE DATOS", index=False)
                     lista_df.to_excel(writer, sheet_name="LISTA", index=False)
@@ -2008,7 +2008,7 @@ class AutoBuildDBWindow(tk.Toplevel):
 class RootApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        # Restaurar tamaÃ±o/posiciÃ³n si existe en prefs
+        # Restaurar tamaño/posición si existe en prefs
         prefs = load_prefs()
         geom = prefs.get("geometry")
         try:
@@ -2017,7 +2017,7 @@ class RootApp(tk.Tk):
             self.geometry("1180x780")
         self.minsize(1020, 660)
 
-        # Ruta global del EXCEL "Listado de artÃ­culos" que usarÃ¡n los mÃ³dulos
+        # Ruta global del EXCEL "Listado de artículos" que usarán los módulos
         self.listado_path: Optional[Path] = None
         self.packs_path: Optional[Path] = None
         self.packs_df = None
@@ -2026,7 +2026,7 @@ class RootApp(tk.Tk):
         ensure_empresas_seed_applied()  # Sincroniza empresas.json con la semilla y conserva agregados
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        # La selecciÃ³n del LISTADO DE ARTÃCULOS ahora se hace desde el menÃº principal
+        # La selección del LISTADO DE ARTÍCULOS ahora se hace desde el menú principal
         self._show_start()
 
     def _on_close(self):
@@ -2039,10 +2039,10 @@ class RootApp(tk.Tk):
         self.destroy()
 
     def _choose_listado_inicial(self):
-        """Pide el Excel de LISTADO DE ARTÃCULOS y actualiza el estado de los botones."""
+        """Pide el Excel de LISTADO DE ARTÍCULOS y actualiza el estado de los botones."""
         prefs = load_prefs()
         path = filedialog.askopenfilename(
-            title="Selecciona el EXCEL de LISTADO DE ARTÃCULOS",
+            title="Selecciona el EXCEL de LISTADO DE ARTÍCULOS",
             initialdir=prefs.get("last_dir"),
             filetypes=[("Excel", "*.xlsm *.xlsx *.xls"), ("Todos los archivos", "*.*")],
         )
@@ -2064,7 +2064,7 @@ class RootApp(tk.Tk):
         if self.listado_path is not None:
             messagebox.showinfo(
                 "Listado cargado",
-                f"Se cargÃ³ correctamente el LISTADO DE ARTICULOS.\n\nArchivo:\n{self.listado_path.name}"
+                f"Se cargó correctamente el LISTADO DE ARTICULOS.\n\nArchivo:\n{self.listado_path.name}"
             )
 
     def _clear(self):
@@ -2130,16 +2130,16 @@ class RootApp(tk.Tk):
         if not self.listado_path:
             messagebox.showwarning(
                 "Listado no cargado",
-                "Primero debes seleccionar el Excel LISTADO DE ARTÃCULOS al inicio.",
+                "Primero debes seleccionar el Excel LISTADO DE ARTÍCULOS al inicio.",
             )
             return False
         return True
 
     def _choose_db_flow(self):
-        """Crear automÃ¡ticamente la BASE DE DATOS desde el listado y abrir el buscador.
+        """Crear automáticamente la BASE DE DATOS desde el listado y abrir el buscador.
 
-        OptimizaciÃ³n: si ya existe en la carpeta temporal un archivo
-        MH_TMP_BASE_<nombre_listado>.xlsx generado previamente en esta sesiÃ³n,
+        Optimización: si ya existe en la carpeta temporal un archivo
+        MH_TMP_BASE_<nombre_listado>.xlsx generado previamente en esta sesión,
         se reutiliza en lugar de volver a crearlo.
         """
         if not self._require_listado():
@@ -2165,11 +2165,11 @@ class RootApp(tk.Tk):
                 self._show_search(candidate)
                 return
             except Exception:
-                # Si algo falla, seguimos con el flujo estÃ¡ndar de creaciÃ³n
+                # Si algo falla, seguimos con el flujo estándar de creación
                 pass
 
         def _done(db_path: Optional[Path]):
-            # Callback que se ejecuta cuando termina la creaciÃ³n
+            # Callback que se ejecuta cuando termina la creación
             if db_path is None:
                 return
             self._show_search(db_path)
@@ -2192,7 +2192,7 @@ class RootApp(tk.Tk):
             messagebox.showerror("Error", f"No se pudo abrir la herramienta de Tivendo.\n{e}")
 
     def _ingreso_masivo_flow(self):
-        # Abre la herramienta de ingreso masivo de artÃ­culos en la ventana principal
+        # Abre la herramienta de ingreso masivo de artículos en la ventana principal
         if not self._require_listado():
             return
         try:
@@ -2201,7 +2201,7 @@ class RootApp(tk.Tk):
         except Exception as e:
             messagebox.showerror(
                 "Error",
-                f"No se pudo abrir la herramienta de ingreso masivo de artÃ­culos.\n{e}",
+                f"No se pudo abrir la herramienta de ingreso masivo de artículos.\n{e}",
             )
     def _show_search(self, db_path: Optional[Path]):
         self._clear()
@@ -2217,12 +2217,12 @@ def is_ident_header(x: str) -> bool:
     x = _norm_lc(x)
     if not x or x.startswith("unnamed"): return False
     if "barra" in x: return False
-    return x in {"cÃ³digo","codigo","identificador","id"} or x.startswith("cod") or "identif" in x
+    return x in {"código","codigo","identificador","id"} or x.startswith("cod") or "identif" in x
 
 def is_barra_interna_header(x: str) -> bool:
     x = _norm_lc(x)
     if not x or x.startswith("unnamed"): return False
-    return ("barra" in x and "intern" in x) or x in {"codigo de barra interno","cÃ³digo de barra interno"}
+    return ("barra" in x and "intern" in x) or x in {"codigo de barra interno","código de barra interno"}
 
 def is_nombre_header(x: str) -> bool:
     x = _norm_lc(x)
@@ -2249,10 +2249,10 @@ class TivendoWindow(ttk.Frame):
 
         top = ttk.Frame(self)
         top.pack(fill="x")
-        # BotÃ³n para volver al menÃº principal sin usar mÃ©todos adicionales
+        # Botón para volver al menú principal sin usar métodos adicionales
         ttk.Button(
             top,
-            text="âŸµ Volver al inicio",
+            text="⟵ Volver al inicio",
             command=lambda: (self.destroy(), self.go_home_cb() if callable(self.go_home_cb) else None),
         ).pack(side="left", padx=5, pady=5)
 
@@ -2260,7 +2260,7 @@ class TivendoWindow(ttk.Frame):
         self.df_map = None
         self.df_preview = None     # DataFrame completo
         self.df_view = None        # DataFrame filtrado (None = sin filtro)
-        self._df_preview_norm = {} # columnas normalizadas para filtro rÃ¡pido
+        self._df_preview_norm = {} # columnas normalizadas para filtro rápido
 
         self.enable_r2 = tk.BooleanVar(value=False)
         self.export_only_valid = tk.BooleanVar(value=True)
@@ -2269,8 +2269,8 @@ class TivendoWindow(ttk.Frame):
         self._build_stepB_paste()
         self._build_stepC_preview()
 
-        # Si ya tenemos un listado entregado desde la app principal, lo cargamos automÃ¡ticamente
-        # PERO en segundo plano para que la ventana se abra al instante (mejor percepciÃ³n de velocidad).
+        # Si ya tenemos un listado entregado desde la app principal, lo cargamos automáticamente
+        # PERO en segundo plano para que la ventana se abra al instante (mejor percepción de velocidad).
         if listado_path is not None:
             try:
                 self.path_listado = Path(listado_path)
@@ -2291,27 +2291,27 @@ class TivendoWindow(ttk.Frame):
         f = self.stepA = ttk.Frame(self, padding=16)
         ttk.Label(
             f,
-            text="Paso 1: Listado de artÃ­culos ya cargado desde el menÃº principal",
+            text="Paso 1: Listado de artículos ya cargado desde el menú principal",
             font=("Segoe UI", 12, "bold"),
         ).pack(anchor="w")
         ttk.Label(
             f,
-            text="Se utilizarÃ¡ el LISTADO DE ARTÃCULOS que seleccionaste al inicio del programa.",
+            text="Se utilizará el LISTADO DE ARTÍCULOS que seleccionaste al inicio del programa.",
             foreground="#444",
         ).pack(anchor="w", pady=(4, 12))
 
         # Etiqueta informativa con el nombre del archivo detectado
         self.lbl_listado = ttk.Label(
             f,
-            text="Listado aÃºn no cargado",
+            text="Listado aún no cargado",
             foreground="#666",
         )
         self.lbl_listado.pack(anchor="w", pady=(8, 12))
 
-        # BotÃ³n para pasar al siguiente paso (pegar los datos)
+        # Botón para pasar al siguiente paso (pegar los datos)
         self.btn_to_paste = ttk.Button(
             f,
-            text="Continuar â†’",
+            text="Continuar →",
             state="disabled",
             command=lambda: self._show(self.stepB),
         )
@@ -2334,7 +2334,7 @@ class TivendoWindow(ttk.Frame):
         except Exception:
             pass
 
-        # Deshabilitar botÃ³n continuar mientras carga
+        # Deshabilitar botón continuar mientras carga
         try:
             self.btn_to_paste.config(state="disabled")
         except Exception:
@@ -2369,7 +2369,7 @@ class TivendoWindow(ttk.Frame):
                     self.df_map = df_map
                     self.lbl_listado.config(text=label_text)
                     self.btn_to_paste.config(state="normal")
-                    # Si estÃ¡bamos en Paso 2, igual queda listo para usar
+                    # Si estábamos en Paso 2, igual queda listo para usar
                 except Exception:
                     pass
 
@@ -2391,7 +2391,7 @@ class TivendoWindow(ttk.Frame):
                 header_row = r
                 break
         if header_row is None:
-            raise ValueError("No se localizaron encabezados de 'CÃ³digo' y 'CÃ³digo barra interno' en las primeras filas.")
+            raise ValueError("No se localizaron encabezados de 'Código' y 'Código barra interno' en las primeras filas.")
 
         # Reutilizar df_raw: renombrar con la fila de encabezado encontrada
         df = df_raw.iloc[header_row:].copy()
@@ -2404,7 +2404,7 @@ class TivendoWindow(ttk.Frame):
         barra_col  = next((c for c in cols if is_barra_interna_header(c)), None)
         nombre_col = next((c for c in cols if is_nombre_header(c)), None) or ident_col
         if not (ident_col and barra_col):
-            raise ValueError(f"No se identificaron columnas vÃ¡lidas. Detectadas: {cols}")
+            raise ValueError(f"No se identificaron columnas válidas. Detectadas: {cols}")
 
         df_map = df[[ident_col, barra_col, nombre_col]].copy()
         df_map.columns = ["Identificador", "CodigoBarraInterno", "Nombre"]
@@ -2413,29 +2413,29 @@ class TivendoWindow(ttk.Frame):
 
         label_text = (
             f"OK: {path.name} | "
-            f"CÃ³digo='{ident_col}' | Barra='{barra_col}' | Nombre='{nombre_col}'"
+            f"Código='{ident_col}' | Barra='{barra_col}' | Nombre='{nombre_col}'"
         )
         return df_map, label_text
 
     def _build_stepB_paste(self):
         f = self.stepB = ttk.Frame(self, padding=16)
-        ttk.Label(f, text="Paso 2: Pega 'CÃ³digos de barra internos' y 'Precios' (uno por lÃ­nea, mismo orden)",
+        ttk.Label(f, text="Paso 2: Pega 'Códigos de barra internos' y 'Precios' (uno por línea, mismo orden)",
                   font=("Segoe UI", 12, "bold")).pack(anchor="w")
 
         cont = ttk.Frame(f); cont.pack(fill="both", expand=True, pady=12)
         left = ttk.Frame(cont); left.pack(side="left", fill="both", expand=True, padx=(0,8))
         right = ttk.Frame(cont); right.pack(side="left", fill="both", expand=True, padx=(8,0))
 
-        ttk.Label(left, text="CÃ³digos de barra internos (uno por lÃ­nea)").pack(anchor="w")
+        ttk.Label(left, text="Códigos de barra internos (uno por línea)").pack(anchor="w")
         self.txt_cod = tk.Text(left, height=20, wrap="none"); self.txt_cod.pack(fill="both", expand=True)
 
-        ttk.Label(right, text="Precios (uno por lÃ­nea)").pack(anchor="w")
+        ttk.Label(right, text="Precios (uno por línea)").pack(anchor="w")
         self.txt_prec = tk.Text(right, height=20, wrap="none"); self.txt_prec.pack(fill="both", expand=True)
 
         bar = ttk.Frame(f); bar.pack(fill="x")
         ttk.Button(bar, text="Limpiar", command=lambda:(self.txt_cod.delete("1.0","end"), self.txt_prec.delete("1.0","end"))).pack(side="left")
-        ttk.Button(bar, text="â† Volver", command=lambda:self._show(self.stepA)).pack(side="left", padx=8)
-        ttk.Button(bar, text="Siguiente â†’", command=self._build_preview_from_paste).pack(side="right")
+        ttk.Button(bar, text="← Volver", command=lambda:self._show(self.stepA)).pack(side="left", padx=8)
+        ttk.Button(bar, text="Siguiente →", command=self._build_preview_from_paste).pack(side="right")
 
     def _read_pasted_lists(self):
         codes = [l.strip() for l in self.txt_cod.get("1.0","end").splitlines() if l.strip()]
@@ -2444,12 +2444,12 @@ class TivendoWindow(ttk.Frame):
 
     def _build_preview_from_paste(self):
         if self.df_map is None:
-            messagebox.showwarning("Listado requerido", "Primero selecciona el Listado de artÃ­culos."); return
+            messagebox.showwarning("Listado requerido", "Primero selecciona el Listado de artículos."); return
         codes, prices = self._read_pasted_lists()
         if not codes or not prices:
-            messagebox.showwarning("Datos faltantes", "Pega al menos un cÃ³digo y un precio."); return
+            messagebox.showwarning("Datos faltantes", "Pega al menos un código y un precio."); return
         if len(codes) != len(prices):
-            messagebox.showwarning("Longitudes distintas", f"Hay {len(codes)} cÃ³digos y {len(prices)} precios. Deben tener la misma cantidad."); return
+            messagebox.showwarning("Longitudes distintas", f"Hay {len(codes)} códigos y {len(prices)} precios. Deben tener la misma cantidad."); return
 
         df_in = pd.DataFrame({"CodigoBarraInterno": codes, "Precio1": prices})
         df = df_in.merge(self.df_map, on="CodigoBarraInterno", how="left")
@@ -2471,9 +2471,9 @@ class TivendoWindow(ttk.Frame):
         f = self.stepC = ttk.Frame(self, padding=16)
         ttk.Label(f, text="Paso 3: Vista previa, asigna rangos y genera el archivo", font=("Segoe UI", 12, "bold")).pack(anchor="w")
 
-        # ---- Filtro rÃ¡pido
+        # ---- Filtro rápido
         filter_bar = ttk.Frame(f); filter_bar.pack(fill="x", pady=(4,6))
-        ttk.Label(filter_bar, text="Filtro rÃ¡pido:").pack(side="left")
+        ttk.Label(filter_bar, text="Filtro rápido:").pack(side="left")
         self.var_filter = tk.StringVar(value="")
         self.ent_filter = ttk.Entry(filter_bar, width=40, textvariable=self.var_filter)
         self.ent_filter.pack(side="left", padx=6)
@@ -2486,7 +2486,7 @@ class TivendoWindow(ttk.Frame):
 
         # Validador superior
         self.validator_bar = ttk.Frame(f); self.validator_bar.pack(fill="x", pady=(6,6))
-        self.lbl_val_codes = ttk.Label(self.validator_bar, text="CÃ³digos: 0")
+        self.lbl_val_codes = ttk.Label(self.validator_bar, text="Códigos: 0")
         self.lbl_val_prices = ttk.Label(self.validator_bar, text="Precios: 0")
         self.lbl_val_found = ttk.Label(self.validator_bar, text="Encontrados: 0")
         self.lbl_val_nofound = ttk.Label(self.validator_bar, text="No encontrados: 0")
@@ -2495,7 +2495,7 @@ class TivendoWindow(ttk.Frame):
 
         body = ttk.Frame(f); body.pack(fill="both", expand=True, pady=(8,0))
 
-        cols = ("CÃ³digo","Nombre","CodigoBarraInterno","Precio1","RangoInicial1","RangoFinal1",
+        cols = ("Código","Nombre","CodigoBarraInterno","Precio1","RangoInicial1","RangoFinal1",
                 "Precio2","RangoInicial2","RangoFinal2")
         self.columns = cols
         self.tree = ttk.Treeview(body, columns=cols, show="headings", height=22, selectmode="extended")
@@ -2527,7 +2527,7 @@ class TivendoWindow(ttk.Frame):
         row2 = ttk.Frame(side); row2.pack(anchor="w", pady=2)
         ttk.Label(row2, text="Hasta:").pack(side="left")
         ttk.Entry(row2, width=12, textvariable=self.var_def_rf1).pack(side="left", padx=6)
-        ttk.Button(side, text="Aplicar (selecciÃ³n)", command=self._apply_range1_selected).pack(anchor="w", pady=(6,3))
+        ttk.Button(side, text="Aplicar (selección)", command=self._apply_range1_selected).pack(anchor="w", pady=(6,3))
         ttk.Button(side, text="Aplicar a todas", command=self._apply_range1_all).pack(anchor="w")
 
         ttk.Separator(side, orient="horizontal").pack(fill="x", pady=10)
@@ -2551,13 +2551,13 @@ class TivendoWindow(ttk.Frame):
         ttk.Separator(side, orient="horizontal").pack(fill="x", pady=10)
         ttk.Label(side, text="Sugerencias").pack(anchor="w")
         ttk.Label(side, text="- Precio x kilo: usar 0,001 a 9999", foreground="#555").pack(anchor="w")
-        ttk.Checkbutton(side, text="Exportar solo vÃ¡lidas (encontradas)", variable=self.export_only_valid).pack(anchor="w", pady=(10,0))
+        ttk.Checkbutton(side, text="Exportar solo válidas (encontradas)", variable=self.export_only_valid).pack(anchor="w", pady=(10,0))
 
         self._setup_cell_editing()
 
         bottom = ttk.Frame(f); bottom.pack(fill="x", pady=(8,0))
         self.lbl_info = ttk.Label(bottom, text="", foreground="#555"); self.lbl_info.pack(side="left")
-        ttk.Button(bottom, text="â† Volver a pegar", command=lambda:self._show(self.stepB)).pack(side="right", padx=8)
+        ttk.Button(bottom, text="← Volver a pegar", command=lambda:self._show(self.stepB)).pack(side="right", padx=8)
         ttk.Button(bottom, text="Generar archivo...", command=self._export).pack(side="right")
 
         self._toggle_r2(initial=True)
@@ -2586,7 +2586,7 @@ class TivendoWindow(ttk.Frame):
         self.tree.delete(*self.tree.get_children())
         df = self._current_df()
 
-        # Extraer columnas como listas para inserciÃ³n rÃ¡pida
+        # Extraer columnas como listas para inserción rápida
         def _col(name, default=""):
             return df[name].fillna(default).astype(str).tolist() if name in df.columns else [default] * len(df)
 
@@ -2651,11 +2651,11 @@ class TivendoWindow(ttk.Frame):
 
     def _update_validator_counts(self, total_codes: int, total_prices: int, nofound: int = -1):
         if nofound < 0:
-            # Fallback: contar desde el Ã¡rbol si no se provee
-            found = sum(1 for r in self.tree.get_children() if self.tree.set(r, "CÃ³digo").strip())
+            # Fallback: contar desde el árbol si no se provee
+            found = sum(1 for r in self.tree.get_children() if self.tree.set(r, "Código").strip())
             nofound = total_codes - found
         found = total_codes - nofound
-        self.lbl_val_codes.config(text=f"CÃ³digos: {total_codes}")
+        self.lbl_val_codes.config(text=f"Códigos: {total_codes}")
         self.lbl_val_prices.config(text=f"Precios: {total_prices}")
         self.lbl_val_found.config(text=f"Encontrados: {found}")
         self.lbl_val_nofound.config(text=f"No encontrados: {nofound}")
@@ -2666,7 +2666,7 @@ class TivendoWindow(ttk.Frame):
         self.lbl_val_found.configure(foreground="#0a0")
         self.lbl_val_nofound.configure(foreground=("#c00" if nofound>0 else "#333"))
 
-    # ----- ediciÃ³n de celdas (Treeview) -----
+    # ----- edición de celdas (Treeview) -----
     def _setup_cell_editing(self):
         self.tree.bind("<Double-1>", self._begin_edit_cell)
         self._edit_entry = None
@@ -2769,16 +2769,16 @@ class TivendoWindow(ttk.Frame):
             messagebox.showwarning("Sin datos", "No hay filas para exportar."); return
 
         if self.export_only_valid.get():
-            df_tabla = df_tabla[df_tabla["CÃ³digo"].astype(str).str.strip() != ""]
+            df_tabla = df_tabla[df_tabla["Código"].astype(str).str.strip() != ""]
             if df_tabla.empty:
-                messagebox.showwarning("Sin vÃ¡lidas", "No hay filas vÃ¡lidas para exportar."); return
+                messagebox.showwarning("Sin válidas", "No hay filas válidas para exportar."); return
 
         ok = df_tabla.copy()
         for col in ("RangoInicial2","RangoFinal2","Precio2"):
             if col not in ok.columns: ok[col] = ""
 
-        output_cols = ["CÃ³digo","RangoInicial1","RangoFinal1","Precio1","RangoInicial2","RangoFinal2","Precio2"]
-        missing = [c for c in ("CÃ³digo","RangoInicial1","RangoFinal1","Precio1") if c not in ok.columns]
+        output_cols = ["Código","RangoInicial1","RangoFinal1","Precio1","RangoInicial2","RangoFinal2","Precio2"]
+        missing = [c for c in ("Código","RangoInicial1","RangoFinal1","Precio1") if c not in ok.columns]
         if missing:
             messagebox.showerror("Error", f"Faltan columnas para exportar: {missing}"); return
 
@@ -2800,7 +2800,7 @@ class TivendoWindow(ttk.Frame):
         frame.pack(fill="both", expand=True)
 
 # =====================================================
-#  MÃ³dulo Tivendo: Ingreso masivo de artÃ­culos (integrado en menÃº principal)
+#  Módulo Tivendo: Ingreso masivo de artículos (integrado en menú principal)
 # =====================================================
 
 
@@ -2855,15 +2855,15 @@ def buscar_siguiente_codigo_disponible(codigo_actual: str, codigos_catalogo_set,
 class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
     def __init__(self, master, catalogo_path: Optional[Path] = None, go_home_cb=None):
         super().__init__(master)
-        self.master.title("Tivendo - Ingreso Masivo de ArtÃ­culos (v92-dev)")
+        self.master.title("Tivendo - Ingreso Masivo de Artículos (v92-dev)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
 
         self.df_import = pd.DataFrame(columns=[
-            "CÃ³digo", "Nombre", "Unidad", "Precio",
-            "CÃ³digo barra interno", "CÃ³digo barra externo",
-            "DescripciÃ³n", "Es Servicio", "Es Exento",
-            "Impuesto EspecÃ­fico", "Id CategorÃ­a",
+            "Código", "Nombre", "Unidad", "Precio",
+            "Código barra interno", "Código barra externo",
+            "Descripción", "Es Servicio", "Es Exento",
+            "Impuesto Específico", "Id Categoría",
             "Disponible venta", "Activo",
             "Utilidad", "Tipo Utilidad", "Palabras Clave"
         ])
@@ -2872,7 +2872,7 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         self.codigos_catalogo_set = set()
         self.codigos_catalogo_norm_set = set()
 
-        # Cargamos siempre la versiÃ³n mÃ¡s reciente de proveedores desde empresas.json
+        # Cargamos siempre la versión más reciente de proveedores desde empresas.json
         _emp = load_empresas()
         self.empresas_name_to_id = {v: k for k, v in _emp.items()}
 
@@ -2893,7 +2893,7 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
 
         top = ttk.Frame(self)
         top.pack(fill="x")
-        ttk.Button(top, text="âŸµ Volver al inicio", command=self._back_home).pack(side="left", padx=5, pady=5)
+        ttk.Button(top, text="⟵ Volver al inicio", command=self._back_home).pack(side="left", padx=5, pady=5)
 
         self.container = ttk.Frame(self)
         self.container.pack(fill="both", expand=True)
@@ -2910,7 +2910,7 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         self._crear_paso3()
         self._mostrar_paso(1)
 
-        # Carga diferida del catÃ¡logo (no bloquea la UI)
+        # Carga diferida del catálogo (no bloquea la UI)
         if catalogo_path:
             try:
                 self._start_async_catalogo_load(catalogo_path)
@@ -2920,17 +2920,17 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
     def _crear_paso1(self):
         lbl_titulo = ttk.Label(
             self.frame_paso1,
-            text="PASO 1: Configura el cÃ³digo inicial y el proveedor.",
+            text="PASO 1: Configura el código inicial y el proveedor.",
             font=("", 11, "bold"),
             wraplength=1150,
             justify="left",
         )
         lbl_titulo.pack(fill="x", padx=10, pady=(10, 5))
 
-        frame_conf = ttk.LabelFrame(self.frame_paso1, text="ConfiguraciÃ³n general")
+        frame_conf = ttk.LabelFrame(self.frame_paso1, text="Configuración general")
         frame_conf.pack(fill="x", padx=10, pady=5)
 
-        ttk.Label(frame_conf, text="CÃ³digo identificador inicial:").grid(
+        ttk.Label(frame_conf, text="Código identificador inicial:").grid(
             row=0, column=0, padx=5, pady=5, sticky="e"
         )
         self.entry_codigo_inicial = ttk.Entry(
@@ -2938,7 +2938,7 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         )
         self.entry_codigo_inicial.grid(row=0, column=1, padx=5, pady=5)
 
-        ttk.Label(frame_conf, text="Proveedor (Id CategorÃ­a):").grid(
+        ttk.Label(frame_conf, text="Proveedor (Id Categoría):").grid(
             row=0, column=2, padx=5, pady=5, sticky="e"
         )
         nombres_empresas = sorted(self.empresas_name_to_id.keys())
@@ -2968,19 +2968,19 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         )
         btn_instrucciones.grid(row=0, column=5, padx=10, pady=5, sticky="w")
 
-        # InformaciÃ³n sobre el catÃ¡logo utilizado para validar cÃ³digos
+        # Información sobre el catálogo utilizado para validar códigos
         frame_cat = ttk.LabelFrame(
             self.frame_paso1,
-            text="Listado de artÃ­culos para validar cÃ³digos",
+            text="Listado de artículos para validar códigos",
         )
         frame_cat.pack(fill="x", padx=10, pady=5)
 
         ttk.Label(
             frame_cat,
             text=(
-                "Se estÃ¡ utilizando el LISTADO DE ARTÃCULOS cargado desde el menÃº principal "
-                "para validar cÃ³digos ya existentes.\n"
-                "Si necesitas cambiar ese archivo, vuelve al menÃº principal y selecciona otro listado."
+                "Se está utilizando el LISTADO DE ARTÍCULOS cargado desde el menú principal "
+                "para validar códigos ya existentes.\n"
+                "Si necesitas cambiar ese archivo, vuelve al menú principal y selecciona otro listado."
             ),
             wraplength=1150,
             justify="left",
@@ -2989,14 +2989,14 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         frame_nav = ttk.Frame(self.frame_paso1)
         frame_nav.pack(fill="x", padx=10, pady=10)
 
-        btn_anterior_p1 = ttk.Button(frame_nav, text="â† Anterior", state="disabled")
+        btn_anterior_p1 = ttk.Button(frame_nav, text="← Anterior", state="disabled")
         btn_anterior_p1.pack(side="left")
 
-        btn_siguiente = ttk.Button(frame_nav, text="Siguiente â†’", command=self._ir_a_paso2)
+        btn_siguiente = ttk.Button(frame_nav, text="Siguiente →", command=self._ir_a_paso2)
         btn_siguiente.pack(side="right")
 
     def _on_empresa_search_p1(self, event=None):
-        """Filtra en vivo la lista de proveedores del PASO 1 segÃºn el mini buscador."""
+        """Filtra en vivo la lista de proveedores del PASO 1 según el mini buscador."""
         _filter_combobox_choices(
             self.var_empresa_search_p1.get().strip().lower(),
             self.empresas_choices_p1,
@@ -3008,8 +3008,8 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         lbl_titulo = ttk.Label(
             self.frame_paso2,
             text=(
-                "PASO 2: Ingreso masivo de artÃ­culos pegando columnas.\n"
-                "Pega los datos directamente en los recuadros: Nombre, Precio, CÃ³digo barra interno y externo."
+                "PASO 2: Ingreso masivo de artículos pegando columnas.\n"
+                "Pega los datos directamente en los recuadros: Nombre, Precio, Código barra interno y externo."
             ),
             font=("", 11, "bold"),
             wraplength=1150,
@@ -3017,7 +3017,7 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         )
         lbl_titulo.pack(fill="x", padx=10, pady=(10, 5))
 
-        frame_cols = ttk.LabelFrame(self.frame_paso2, text="Ingreso masivo (uno por lÃ­nea en cada columna)")
+        frame_cols = ttk.LabelFrame(self.frame_paso2, text="Ingreso masivo (uno por línea en cada columna)")
         frame_cols.pack(fill="both", expand=True, padx=10, pady=5)
 
         frame_cols.rowconfigure(0, weight=1)
@@ -3026,7 +3026,7 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         col1.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
         frame_cols.columnconfigure(0, weight=3)
 
-        ttk.Label(col1, text="Nombre (uno por lÃ­nea)").pack(anchor="w")
+        ttk.Label(col1, text="Nombre (uno por línea)").pack(anchor="w")
         self.text_nombre = tk.Text(col1, wrap="none", height=20, width=40)
         self.text_nombre.pack(fill="both", expand=True, pady=2)
         scroll_y_nombre = ttk.Scrollbar(col1, orient="vertical", command=self.text_nombre.yview)
@@ -3039,7 +3039,7 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         col2.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
         frame_cols.columnconfigure(1, weight=1)
 
-        ttk.Label(col2, text="Precio (uno por lÃ­nea)").pack(anchor="w")
+        ttk.Label(col2, text="Precio (uno por línea)").pack(anchor="w")
         self.text_precio = tk.Text(col2, wrap="none", height=20, width=14)
         self.text_precio.pack(fill="both", expand=True, pady=2)
         scroll_y_precio = ttk.Scrollbar(col2, orient="vertical", command=self.text_precio.yview)
@@ -3052,7 +3052,7 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         col3.grid(row=0, column=2, sticky="nsew", padx=5, pady=5)
         frame_cols.columnconfigure(2, weight=1)
 
-        ttk.Label(col3, text="CÃ³digo barra interno (uno por lÃ­nea)").pack(anchor="w")
+        ttk.Label(col3, text="Código barra interno (uno por línea)").pack(anchor="w")
         self.text_codint = tk.Text(col3, wrap="none", height=20, width=18)
         self.text_codint.pack(fill="both", expand=True, pady=2)
         scroll_y_codint = ttk.Scrollbar(col3, orient="vertical", command=self.text_codint.yview)
@@ -3065,7 +3065,7 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         col4.grid(row=0, column=3, sticky="nsew", padx=5, pady=5)
         frame_cols.columnconfigure(3, weight=1)
 
-        ttk.Label(col4, text="CÃ³digo barra externo (uno por lÃ­nea, opcional)").pack(anchor="w")
+        ttk.Label(col4, text="Código barra externo (uno por línea, opcional)").pack(anchor="w")
         self.text_codext = tk.Text(col4, wrap="none", height=20, width=18)
         self.text_codext.pack(fill="both", expand=True, pady=2)
         scroll_y_codext = ttk.Scrollbar(col4, orient="vertical", command=self.text_codext.yview)
@@ -3083,10 +3083,10 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         frame_nav = ttk.Frame(self.frame_paso2)
         frame_nav.pack(fill="x", padx=10, pady=10)
 
-        btn_anterior = ttk.Button(frame_nav, text="â† Anterior", command=lambda: self._mostrar_paso(1))
+        btn_anterior = ttk.Button(frame_nav, text="← Anterior", command=lambda: self._mostrar_paso(1))
         btn_anterior.pack(side="left")
 
-        btn_siguiente = ttk.Button(frame_nav, text="Siguiente â†’", command=self._procesar_y_ir_a_paso3)
+        btn_siguiente = ttk.Button(frame_nav, text="Siguiente →", command=self._procesar_y_ir_a_paso3)
         btn_siguiente.pack(side="right")
 
     def _crear_paso3(self):
@@ -3099,7 +3099,7 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         )
         lbl_titulo.pack(fill="x", padx=10, pady=(10, 5))
 
-        frame_archivo = ttk.LabelFrame(self.frame_paso3, text="ConfiguraciÃ³n del archivo de salida")
+        frame_archivo = ttk.LabelFrame(self.frame_paso3, text="Configuración del archivo de salida")
         frame_archivo.pack(fill="x", padx=10, pady=5)
 
         ttk.Label(frame_archivo, text="Nombre archivo salida:").grid(
@@ -3140,7 +3140,7 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         self.tree.tag_configure("fila_par", background="#F2F2F2")
         self.tree.tag_configure("fila_impar", background="#FFFFFF")
 
-        # Doble click para editar celdas (menos la columna CÃ³digo)
+        # Doble click para editar celdas (menos la columna Código)
         self.tree.bind("<Double-1>", self._on_tree_double_click)
 
         self._refrescar_tabla()
@@ -3148,7 +3148,7 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         frame_nav = ttk.Frame(self.frame_paso3)
         frame_nav.pack(fill="x", padx=10, pady=10)
 
-        btn_anterior = ttk.Button(frame_nav, text="â† Anterior", command=self._ir_a_paso2)
+        btn_anterior = ttk.Button(frame_nav, text="← Anterior", command=self._ir_a_paso2)
         btn_anterior.pack(side="left")
 
     def _ajustar_anchos_columnas(self):
@@ -3178,7 +3178,7 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
             self.frame_paso3.pack(fill="both", expand=True)
 
     # ==========================
-    # EdiciÃ³n en la vista previa
+    # Edición en la vista previa
     # ==========================
     def _on_tree_double_click(self, event):
         # Cerrar editor anterior si existe
@@ -3199,11 +3199,11 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
 
         col_name = columnas[col_index]
 
-        # No permitir editar el cÃ³digo
-        if col_name == "CÃ³digo":
+        # No permitir editar el código
+        if col_name == "Código":
             return
 
-        # Ãndice de la fila en el DataFrame
+        # Índice de la fila en el DataFrame
         row_index = self.tree.index(item_id)
         if row_index < 0 or row_index >= len(self.df_import):
             return
@@ -3247,16 +3247,16 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
 
     def _custom_dialog_codigo_existente(self, codigo, desc_cat, siguiente_codigo):
         top = tk.Toplevel(self)
-        top.title("CÃ³digo ya existente")
+        top.title("Código ya existente")
         top.grab_set()
 
-        msg = f"El cÃ³digo identificador '{codigo}' YA existe en el catÃ¡logo cargado.\n\n"
+        msg = f"El código identificador '{codigo}' YA existe en el catálogo cargado.\n\n"
         if desc_cat:
-            msg += f"ArtÃ­culo actual en Tivendo (vista previa catÃ¡logo):\n{desc_cat}\n\n"
+            msg += f"Artículo actual en Tivendo (vista previa catálogo):\n{desc_cat}\n\n"
 
         msg += (
-            "Si usas este cÃ³digo en el archivo de ingreso masivo, Tivendo REEMPLAZARÃ ese artÃ­culo por el nuevo.\n\n"
-            "Selecciona una opciÃ³n:"
+            "Si usas este código en el archivo de ingreso masivo, Tivendo REEMPLAZARÁ ese artículo por el nuevo.\n\n"
+            "Selecciona una opción:"
         )
 
         lbl = ttk.Label(top, text=msg, justify="left", wraplength=600)
@@ -3292,7 +3292,7 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
     def validar_codigo_inicial(self) -> bool:
         codigo = self.var_codigo_actual.get().strip()
         if not codigo:
-            messagebox.showwarning("AtenciÃ³n", "Debes ingresar el cÃ³digo identificador inicial.")
+            messagebox.showwarning("Atención", "Debes ingresar el código identificador inicial.")
             return False
 
         if self.df_catalogo is None or (not self.codigos_catalogo_set and not self.codigos_catalogo_norm_set):
@@ -3357,21 +3357,21 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         top.geometry("750x450")
 
         texto = (
-            "Flujo recomendado para el Ingreso Masivo de ArtÃ­culos:\n\n"
+            "Flujo recomendado para el Ingreso Masivo de Artículos:\n\n"
             "1) PASO 1:\n"
-            "   - Ingresa el CÃ“DIGO IDENTIFICADOR INICIAL (por ejemplo A020267).\n"
-            "   - Selecciona el PROVEEDOR (Id CategorÃ­a).\n"
-            "   - (Opcional) Carga un listado de artÃ­culos exportado desde Tivendo para validar si el cÃ³digo ya existe.\n"
-            "   - Si el cÃ³digo ya existe, aparecerÃ¡n 3 opciones: Cancelar, Reemplazar datos, o Continuar con el siguiente cÃ³digo disponible.\n\n"
+            "   - Ingresa el CÓDIGO IDENTIFICADOR INICIAL (por ejemplo A020267).\n"
+            "   - Selecciona el PROVEEDOR (Id Categoría).\n"
+            "   - (Opcional) Carga un listado de artículos exportado desde Tivendo para validar si el código ya existe.\n"
+            "   - Si el código ya existe, aparecerán 3 opciones: Cancelar, Reemplazar datos, o Continuar con el siguiente código disponible.\n\n"
             "2) PASO 2:\n"
-            "   - Pega las columnas de NOMBRE, PRECIO, CÃ“DIGO BARRA INTERNO y, si quieres, CÃ“DIGO BARRA EXTERNO.\n"
-            "   - Cada recuadro es una columna; cada lÃ­nea es un artÃ­culo.\n"
-            "   - Presiona 'Siguiente' para procesar la lista. Si hay algÃºn error, se mostrarÃ¡ el detalle y NO avanzarÃ¡s al Paso 3.\n\n"
+            "   - Pega las columnas de NOMBRE, PRECIO, CÓDIGO BARRA INTERNO y, si quieres, CÓDIGO BARRA EXTERNO.\n"
+            "   - Cada recuadro es una columna; cada línea es un artículo.\n"
+            "   - Presiona 'Siguiente' para procesar la lista. Si hay algún error, se mostrará el detalle y NO avanzarás al Paso 3.\n\n"
             "3) PASO 3:\n"
             "   - Revisa la VISTA PREVIA.\n"
             "   - Define el nombre de archivo.\n"
             "   - Haz clic en 'Generar Excel de ingreso masivo'.\n"
-            "   - Recuerda: Tivendo exige mÃ­nimo 2 artÃ­culos con cÃ³digo para aceptar el archivo.\n"
+            "   - Recuerda: Tivendo exige mínimo 2 artículos con código para aceptar el archivo.\n"
         )
 
         lbl = ttk.Label(top, text=texto, justify="left", wraplength=730)
@@ -3382,7 +3382,7 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
 
     def generar_excel(self):
         if self.df_import.empty:
-            messagebox.showwarning("AtenciÃ³n", "No hay artÃ­culos para generar el archivo.")
+            messagebox.showwarning("Atención", "No hay artículos para generar el archivo.")
             return
 
         nombre_defecto = self.var_nombre_archivo_salida.get().strip() or "ingreso_masivo_articulos.xlsx"
@@ -3397,13 +3397,13 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
             return
 
         try:
-            # Usar directamente las columnas del DataFrame â€” idÃ©nticas al orden de ingreso
+            # Usar directamente las columnas del DataFrame — idénticas al orden de ingreso
             columnas_orden = list(self.df_import.columns)
             df_salida = self.df_import[columnas_orden].copy()
 
-            df_salida["CÃ³digo"] = df_salida["CÃ³digo"].astype(str).str.strip()
-            mask_codigo_valido = df_salida["CÃ³digo"].str.len() > 0
-            mask_codigo_valido &= df_salida["CÃ³digo"].str.lower() != "nan"
+            df_salida["Código"] = df_salida["Código"].astype(str).str.strip()
+            mask_codigo_valido = df_salida["Código"].str.len() > 0
+            mask_codigo_valido &= df_salida["Código"].str.lower() != "nan"
             df_salida = df_salida[mask_codigo_valido].copy()
 
             df_salida = df_salida.dropna(how="all")
@@ -3411,15 +3411,15 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
 
             if len(df_salida) < 2:
                 messagebox.showwarning(
-                    "AtenciÃ³n",
-                    "Tivendo exige un mÃ­nimo de 2 artÃ­culos para el ingreso masivo.\n\n"
-                    "Actualmente solo tienes 1 artÃ­culo en la lista."
+                    "Atención",
+                    "Tivendo exige un mínimo de 2 artículos para el ingreso masivo.\n\n"
+                    "Actualmente solo tienes 1 artículo en la lista."
                 )
                 return
 
             df_salida["Precio"] = pd.to_numeric(df_salida["Precio"], errors="coerce")
 
-            for col in ["CÃ³digo barra interno", "CÃ³digo barra externo", "Id CategorÃ­a"]:
+            for col in ["Código barra interno", "Código barra externo", "Id Categoría"]:
                 try:
                     df_salida[col] = pd.to_numeric(df_salida[col], errors="ignore")
                 except Exception:
@@ -3428,7 +3428,7 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
             with pd.ExcelWriter(ruta, engine="openpyxl") as writer:
                 df_salida.to_excel(writer, index=False)
 
-            messagebox.showinfo("Ã‰xito", f"Archivo de ingreso masivo generado:\n{ruta}")
+            messagebox.showinfo("Éxito", f"Archivo de ingreso masivo generado:\n{ruta}")
         except Exception as e:
             messagebox.showerror("Error", f"No se pudo guardar el archivo.\n\nDetalle: {e}")
 
@@ -3443,7 +3443,7 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         self._ajustar_anchos_columnas()
 
     def _start_async_catalogo_load(self, ruta):
-        """Carga el catÃ¡logo en un hilo para no congelar la apertura."""
+        """Carga el catálogo en un hilo para no congelar la apertura."""
         try:
             self.master.config(cursor="watch")
         except Exception:
@@ -3483,7 +3483,7 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         threading.Thread(target=worker, daemon=True).start()
 
     def _parse_catalogo_for_sets(self, ruta):
-        """Lee el catÃ¡logo y devuelve (df_catalogo, codigos_set, codigos_norm_set). No toca la UI."""
+        """Lee el catálogo y devuelve (df_catalogo, codigos_set, codigos_norm_set). No toca la UI."""
         ext = Path(ruta).suffix.lower()  # acepta str o Path
         if ext in [".xlsx", ".xls"]:
             df_raw = pd.read_excel(ruta, header=None)
@@ -3496,11 +3496,11 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
             raise ValueError("Formato de archivo no soportado.")
 
         if df_raw.shape[0] < 6:
-            raise ValueError("El archivo no tiene al menos 6 filas para usar como catÃ¡logo.")
+            raise ValueError("El archivo no tiene al menos 6 filas para usar como catálogo.")
         if df_raw.shape[1] < 4:
             raise ValueError(
                 f"El archivo tiene solo {df_raw.shape[1]} columna(s); "
-                "se necesitan al menos 4 (CÃ³digo, Nombre, ?, Precio)."
+                "se necesitan al menos 4 (Código, Nombre, ?, Precio)."
             )
 
         df = df_raw.iloc[5:, [0, 1, 3]].copy()
@@ -3523,19 +3523,19 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         empresa_nombre = self.var_empresa_nombre.get()
 
         if not codigo:
-            messagebox.showwarning("AtenciÃ³n", "Debes ingresar el cÃ³digo identificador inicial (Paso 1).")
+            messagebox.showwarning("Atención", "Debes ingresar el código identificador inicial (Paso 1).")
             return
         if not empresa_nombre:
-            messagebox.showwarning("AtenciÃ³n", "Debes seleccionar un Proveedor (Id CategorÃ­a) en el Paso 1.")
+            messagebox.showwarning("Atención", "Debes seleccionar un Proveedor (Id Categoría) en el Paso 1.")
             return
         if not nombre:
-            messagebox.showwarning("AtenciÃ³n", "Debes ingresar el Nombre del artÃ­culo.")
+            messagebox.showwarning("Atención", "Debes ingresar el Nombre del artículo.")
             return
         if not precio:
-            messagebox.showwarning("AtenciÃ³n", "Debes ingresar el Precio.")
+            messagebox.showwarning("Atención", "Debes ingresar el Precio.")
             return
         if not cod_int:
-            messagebox.showwarning("AtenciÃ³n", "Debes ingresar el CÃ³digo de barra interno.")
+            messagebox.showwarning("Atención", "Debes ingresar el Código de barra interno.")
             return
 
         if self.var_usar_mismo_codigo.get():
@@ -3543,10 +3543,10 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
 
         solo_digitos = _RE_NO_DIGITS.sub("", precio)  # precio ya es str.strip() desde arriba
         if not solo_digitos:
-            messagebox.showwarning("AtenciÃ³n", f"El precio '{precio}' no es vÃ¡lido.")
+            messagebox.showwarning("Atención", f"El precio '{precio}' no es válido.")
             return
 
-        precio_int = int(solo_digitos)  # garantizado solo dÃ­gitos por _RE_NO_DIGITS
+        precio_int = int(solo_digitos)  # garantizado solo dígitos por _RE_NO_DIGITS
 
         if self.df_catalogo is not None and (self.codigos_catalogo_set or self.codigos_catalogo_norm_set):
             codigo_norm = normalizar_codigo_catalogo(codigo)
@@ -3580,7 +3580,7 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
                     elif decision == "siguiente":
                         codigo = siguiente_codigo
                         self.var_codigo_actual.set(codigo)
-                    # decision == "reemplazar" â†’ continuar con el cÃ³digo actual
+                    # decision == "reemplazar" → continuar con el código actual
 
         item_code = (cod_ext if cod_ext else cod_int).strip()
 
@@ -3594,17 +3594,17 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         id_categoria = self.empresas_name_to_id.get(empresa_nombre, "")
 
         nueva_fila = {
-            "CÃ³digo": codigo,
+            "Código": codigo,
             "Nombre": nombre_final,
             "Unidad": "UN",
             "Precio": precio_int,
-            "CÃ³digo barra interno": cod_int,
-            "CÃ³digo barra externo": cod_barra_externo_final,
-            "DescripciÃ³n": nombre_final,
+            "Código barra interno": cod_int,
+            "Código barra externo": cod_barra_externo_final,
+            "Descripción": nombre_final,
             "Es Servicio": "No",
             "Es Exento": "No",
-            "Impuesto EspecÃ­fico": "",
-            "Id CategorÃ­a": id_categoria,
+            "Impuesto Específico": "",
+            "Id Categoría": id_categoria,
             "Disponible venta": "Si",
             "Activo": "Si",
             "Utilidad": "",
@@ -3624,7 +3624,7 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         self.limpiar_campos()
 
     def _back_home(self):
-        """Vuelve al menÃº principal y cierra esta vista de ingreso masivo."""
+        """Vuelve al menú principal y cierra esta vista de ingreso masivo."""
         self.destroy()
         if callable(self.go_home_cb):
             self.go_home_cb()
@@ -3642,8 +3642,8 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         codigo_inicial = self.var_codigo_actual.get().strip()
         if not codigo_inicial:
             messagebox.showwarning(
-                "AtenciÃ³n",
-                "Debes ingresar primero el cÃ³digo identificador inicial en el PASO 1 antes de procesar la lista."
+                "Atención",
+                "Debes ingresar primero el código identificador inicial en el PASO 1 antes de procesar la lista."
             )
             return False
 
@@ -3658,7 +3658,7 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         self.df_import = self.df_import.head(0).copy()
         max_filas = max(len(lineas_nombre), len(lineas_precio), len(lineas_codint), len(lineas_codext))
         if max_filas == 0:
-            messagebox.showwarning("AtenciÃ³n", "No hay lÃ­neas para procesar en el Paso 2.")
+            messagebox.showwarning("Atención", "No hay líneas para procesar en el Paso 2.")
             return False
 
         total_filas = 0
@@ -3681,11 +3681,11 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
 
             errores = []
             if not nombre:
-                errores.append("Nombre vacÃ­o")
+                errores.append("Nombre vacío")
             if not precio:
-                errores.append("Precio vacÃ­o")
+                errores.append("Precio vacío")
             if not cod_int:
-                errores.append("CÃ³digo barra interno vacÃ­o")
+                errores.append("Código barra interno vacío")
 
             if errores:
                 messagebox.showerror(
@@ -3699,7 +3699,7 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
             if not solo_digitos:
                 messagebox.showerror(
                     "Error en datos",
-                    f"Fila {fila_num}: el precio '{precio}' no es vÃ¡lido.\n\n"
+                    f"Fila {fila_num}: el precio '{precio}' no es válido.\n\n"
                     "Corrige el valor del precio antes de continuar."
                 )
                 return False
@@ -3726,25 +3726,25 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
                 agregados_ok += 1
             else:
                 messagebox.showerror(
-                    "Error al agregar artÃ­culo",
-                    f"Fila {fila_num}: el artÃ­culo no se pudo agregar.\n\n"
-                    "Revisa los mensajes anteriores (por ejemplo, cancelaste el cÃ³digo existente)\n"
+                    "Error al agregar artículo",
+                    f"Fila {fila_num}: el artículo no se pudo agregar.\n\n"
+                    "Revisa los mensajes anteriores (por ejemplo, cancelaste el código existente)\n"
                     "y corrige los datos antes de continuar."
                 )
                 return False
 
         if agregados_ok == 0:
             messagebox.showwarning(
-                "AtenciÃ³n",
-                "No se agregÃ³ ningÃºn artÃ­culo desde la lista.\n"
+                "Atención",
+                "No se agregó ningún artículo desde la lista.\n"
                 "Revisa los datos ingresados en el Paso 2."
             )
             return False
 
         messagebox.showinfo(
-            "ImportaciÃ³n masiva finalizada",
+            "Importación masiva finalizada",
             f"Filas procesadas: {total_filas}\n"
-            f"ArtÃ­culos agregados correctamente: {agregados_ok}"
+            f"Artículos agregados correctamente: {agregados_ok}"
         )
         return True
 
