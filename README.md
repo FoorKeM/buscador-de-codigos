@@ -2,4 +2,6 @@
 
 Aplicacion de escritorio en Python para buscar codigos de productos, administrar proveedores y generar archivos de importacion para Tivendo.
 
-La historia del repositorio parte con `buscador_codigos_v90.py` y luego incorpora `buscador_codigos_v91.py` como base actual optimizada.
+El archivo activo del proyecto es `buscador_codigos.py`.
+
+Las versiones publicadas se conservan como tags y releases de GitHub (`v90`, `v91`, etc.) para poder descargarlas sin llenar la carpeta principal con copias versionadas.

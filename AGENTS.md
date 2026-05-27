@@ -2,9 +2,9 @@
 
 ## What this project is
 
-A single-file Python 3 desktop app (`buscador_codigos_v90.py`) for a Chilean retail/wholesale business. It helps staff search product codes, manage suppliers, and do mass price changes or mass article ingestion for the **Tivendo** POS system. UI is built with `tkinter`/`ttk`. Data manipulation uses `pandas` + `openpyxl`.
+A single-file Python 3 desktop app (`buscador_codigos.py`) for a Chilean retail/wholesale business. It helps staff search product codes, manage suppliers, and do mass price changes or mass article ingestion for the **Tivendo** POS system. UI is built with `tkinter`/`ttk`. Data manipulation uses `pandas` + `openpyxl`.
 
-**Active file:** `buscador_codigos_v90.py` (~3300 lines). Older versions (v78–v89) are in the same folder but unused.
+**Active file:** `buscador_codigos.py` (~3400 lines). Historical versions are kept as GitHub tags/releases (`v90`, `v91`, etc.), not as active working files.
 
 ---
 
@@ -147,6 +147,6 @@ if __name__ == "__main__":
 ## What NOT to do
 
 - Do not read the entire source file on every session — this AGENTS.md is the reference.
-- Do not touch versioned files (v78–v89); only `buscador_codigos_v90.py` is active.
+- Do not create a new `buscador_codigos_vNN.py` file for each change. Keep active development in `buscador_codigos.py`; publish stable snapshots through GitHub tags/releases.
 - Do not flatten the cache structure; both `.pkl` and `_meta.json` must stay in sync.
 - `ConvertView` is a legacy class still in the file but not wired to any menu button — ignore it unless specifically asked.

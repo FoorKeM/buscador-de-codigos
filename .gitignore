@@ -5,5 +5,6 @@ __pycache__/
 buscador_prefs.json
 buscador_codigos_v7*.py
 buscador_codigos_v8*.py
+buscador_codigos_v*.py
 MH_TMP_BASE_*.xlsx
 ~$*.xlsx
