@@ -2,7 +2,11 @@
 # -*- coding: utf-8 -*-
 
 """
-Buscador + Convertidor con gestión de Proveedores integrada (v92)
+Buscador + Convertidor con gestión de Proveedores integrada (v93-dev)
+- v93-dev: vista de rangos desde Lista de Precios.
+    * Carga de Lista de Precios desde el menú principal.
+    * Columnas Rango 1 y Rango 2 en el buscador.
+
 - v92: integración inicial de Maestro de Packs.
     * Carga del Maestro de Packs desde el menú principal.
     * Cruce de artículos contra la columna "Código producto en pack".
@@ -36,6 +40,7 @@ import atexit
 import unicodedata
 import difflib
 import numpy as np
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -991,6 +996,89 @@ def load_packs_data(path: Path):
     return work, packs_index
 
 
+class _HTMLTableParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.rows = []
+        self._in_cell = False
+        self._current_row = None
+        self._current_cell = []
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        if tag == "tr":
+            self._current_row = []
+        elif tag in ("td", "th") and self._current_row is not None:
+            self._in_cell = True
+            self._current_cell = []
+
+    def handle_data(self, data):
+        if self._in_cell:
+            self._current_cell.append(data)
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if tag in ("td", "th") and self._current_row is not None:
+            text = " ".join("".join(self._current_cell).split()).strip()
+            self._current_row.append(text)
+            self._in_cell = False
+            self._current_cell = []
+        elif tag == "tr" and self._current_row is not None:
+            if any(str(c).strip() for c in self._current_row):
+                self.rows.append(self._current_row)
+            self._current_row = None
+
+
+def _read_text_any_encoding(path: Path) -> str:
+    data = Path(path).read_bytes()
+    for enc in ("utf-8-sig", "utf-8", "latin-1", "cp1252"):
+        try:
+            return data.decode(enc)
+        except UnicodeDecodeError:
+            pass
+    return data.decode("latin-1", errors="replace")
+
+
+def load_price_ranges_data(path: Path):
+    """Lee Lista de Precios HTML/.xls y devuelve indice codigo_articulo -> rangos."""
+    parser = _HTMLTableParser()
+    parser.feed(_read_text_any_encoding(path))
+
+    header_idx = None
+    for i, row in enumerate(parser.rows):
+        norm = [_normalize_text(c) for c in row]
+        if "codigo articulo" in norm and "rango 1" in norm and "rango 2" in norm:
+            header_idx = i
+            break
+    if header_idx is None:
+        raise ValueError("No se encontraron columnas de Codigo articulo, Rango 1 y Rango 2.")
+
+    header = [_normalize_text(c) for c in parser.rows[header_idx]]
+    code_idx = header.index("codigo articulo")
+    r1_idx = header.index("rango 1")
+    r2_idx = header.index("rango 2")
+
+    rows = []
+    ranges_index = {}
+    for row in parser.rows[header_idx + 1:]:
+        if len(row) <= max(code_idx, r1_idx, r2_idx):
+            continue
+        codigo = str(row[code_idx]).replace("'", "").strip()
+        rango1 = str(row[r1_idx]).strip()
+        rango2 = str(row[r2_idx]).strip()
+        norm_code = _norm_pack_code(codigo)
+        if not norm_code:
+            continue
+        record = {"codigo": codigo, "rango1": rango1, "rango2": rango2}
+        rows.append(record)
+        ranges_index[norm_code] = record
+
+    if not rows:
+        raise ValueError("No se encontraron rangos de precios en el archivo.")
+
+    return pd.DataFrame(rows), ranges_index
+
+
 class StartView(ttk.Frame):
     """Pantalla de inicio SIN vista previa de proveedores."""
     def __init__(
@@ -1002,8 +1090,10 @@ class StartView(ttk.Frame):
         on_open_ingreso_masivo,
         on_load_listado,
         on_load_packs,
+        on_load_ranges,
         listado_cargado: bool,
         packs_cargado: bool,
+        ranges_cargado: bool,
     ):
         super().__init__(master)
         self.master.title("Buscador de Códigos — MERCADO HOUSE")
@@ -1043,13 +1133,23 @@ class StartView(ttk.Frame):
         )
         self.btn_cargar_packs.pack(pady=(0, 8))
 
+        self.btn_cargar_rangos = ttk.Button(
+            self,
+            text="Cargar LISTA DE PRECIOS para ver rangos",
+            command=on_load_ranges,
+        )
+        self.btn_cargar_rangos.pack(pady=(0, 8))
+
         # Etiqueta de estado + botones (delegado a set_listado_cargado)
         self.lbl_estado = ttk.Label(self, text="", foreground="#555")
         self.lbl_estado.pack(pady=(4, 0), anchor="w")
         self.lbl_estado_packs = ttk.Label(self, text="", foreground="#555")
         self.lbl_estado_packs.pack(pady=(2, 0), anchor="w")
+        self.lbl_estado_rangos = ttk.Label(self, text="", foreground="#555")
+        self.lbl_estado_rangos.pack(pady=(2, 0), anchor="w")
         self.set_listado_cargado(listado_cargado)
         self.set_packs_cargado(packs_cargado)
+        self.set_ranges_cargado(ranges_cargado)
 
     @staticmethod
     def _estado_texto(cargado: bool) -> str:
@@ -1076,6 +1176,17 @@ class StartView(ttk.Frame):
     def set_packs_cargado(self, cargado: bool):
         try:
             self.lbl_estado_packs.config(text=self._estado_packs_texto(cargado))
+        except Exception:
+            pass
+
+    @staticmethod
+    def _estado_rangos_texto(cargado: bool) -> str:
+        return ("Lista de precios/rangos: CARGADA" if cargado
+                else "Lista de precios/rangos: NO cargada")
+
+    def set_ranges_cargado(self, cargado: bool):
+        try:
+            self.lbl_estado_rangos.config(text=self._estado_rangos_texto(cargado))
         except Exception:
             pass
 
@@ -1171,9 +1282,18 @@ class ProvidersView(ttk.Frame):
 
 class SearchView(ttk.Frame):
     """Buscador con barra superior para el botón Volver (no desplaza el contenido)."""
-    def __init__(self, master, go_home_cb, initial_db_path: Optional[Path], packs_path: Optional[Path] = None, packs_index: Optional[dict] = None):
+    def __init__(
+        self,
+        master,
+        go_home_cb,
+        initial_db_path: Optional[Path],
+        packs_path: Optional[Path] = None,
+        packs_index: Optional[dict] = None,
+        ranges_path: Optional[Path] = None,
+        ranges_index: Optional[dict] = None,
+    ):
         super().__init__(master)
-        self.master.title("Buscador de Códigos — MERCADO HOUSE (v92)")
+        self.master.title("Buscador de Códigos — MERCADO HOUSE (v93-dev)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
         self.prefs = load_prefs()
@@ -1181,6 +1301,8 @@ class SearchView(ttk.Frame):
 
         self.packs_path = packs_path
         self.packs_index = packs_index or {}
+        self.ranges_path = ranges_path
+        self.ranges_index = ranges_index or {}
 
         # Carga de datos
         try:
@@ -1242,11 +1364,13 @@ class SearchView(ttk.Frame):
         ttk.Button(btns, text="Ver packs vinculados", command=self.show_linked_packs).pack(side=tk.LEFT, padx=4)
         ttk.Button(btns, text="Copiar...", command=self.show_copy_menu).pack(side=tk.LEFT, padx=4)
 
-        cols = ("codigo","nombre","barcode_interno","barcode_externo","empresa","packs","__input")
+        cols = ("codigo","nombre","barcode_interno","barcode_externo","empresa","packs","rango1","rango2","__input")
         self.tree = ttk.Treeview(self, columns=cols, show="headings", selectmode="extended")
-        for c, t in zip(cols, ["Código","Nombre","Cód. barra interno","Cód. barra externo","Empresa","Código buscado"]):
+        for c, t in zip(cols, ["Código","Nombre","Cód. barra interno","Cód. barra externo","Empresa","Packs","Rango 1","Rango 2","Código buscado"]):
             self.tree.heading(c, text=t)
         self.tree.heading("packs", text="Packs")
+        self.tree.heading("rango1", text="Rango 1")
+        self.tree.heading("rango2", text="Rango 2")
         self.tree.heading("__input", text="Codigo buscado")
         self.tree.column("codigo", width=180, anchor="w")
         self.tree.column("nombre", width=420, anchor="w")
@@ -1254,6 +1378,8 @@ class SearchView(ttk.Frame):
         self.tree.column("barcode_externo", width=180, anchor="w")
         self.tree.column("empresa", width=240, anchor="w")
         self.tree.column("packs", width=90, anchor="center")
+        self.tree.column("rango1", width=130, anchor="center")
+        self.tree.column("rango2", width=130, anchor="center")
         self.tree.column("__input", width=200, anchor="w")
         self.tree.tag_configure("dup_input", background="#FFF3CD")
 
@@ -1445,6 +1571,11 @@ class SearchView(ttk.Frame):
         records = self._pack_records_for_code(codigo)
         return f"Si ({len(records)})" if records else "No"
 
+    def _range_record_for_code(self, codigo: str):
+        if not self.ranges_index:
+            return {}
+        return self.ranges_index.get(_norm_pack_code(codigo), {})
+
     def populate(self, df, emp_id, not_found_count=0):
         """Rellena el Treeview con los resultados de búsqueda y actualiza la barra de estado."""
         for x in self.tree.get_children(): self.tree.delete(x)
@@ -1472,14 +1603,19 @@ class SearchView(ttk.Frame):
         for ident, cod, nom, bi, be, eid, inp in zip(col_ident, col_codigo, col_nombre, col_bi, col_be, col_eid, col_inp):
             emp_txt = "" if nom == "No encontrado" else disp(eid)
             pack_txt = "" if nom == "No encontrado" else pack_disp(ident or cod)
+            range_rec = {} if nom == "No encontrado" else self._range_record_for_code(ident or cod)
+            rango1 = range_rec.get("rango1", "")
+            rango2 = range_rec.get("rango2", "")
             tags = ("dup_input",) if inp.strip() in dup_inputs else ()
-            ins("", "end", values=(cod, nom, bi, be, emp_txt, pack_txt, inp), tags=tags)
+            ins("", "end", values=(cod, nom, bi, be, emp_txt, pack_txt, rango1, rango2, inp), tags=tags)
 
         extra = ""
         if not_found_count: extra += f" | No encontrados: {not_found_count}"
         if dup_inputs: extra += f" | Duplicados (por código ingresado): {len(dup_inputs)}"
         if self.packs_index:
             extra += " | Packs activos"
+        if self.ranges_index:
+            extra += " | Rangos activos"
         self.var_status.set(f"{self.status_db_text} | Resultados: {total} fila(s). Mostrando hasta {MAX_RESULTS}.{extra}")
         self.last_results = df
 
@@ -1999,6 +2135,9 @@ class RootApp(tk.Tk):
         self.packs_path: Optional[Path] = None
         self.packs_df = None
         self.packs_index = {}
+        self.ranges_path: Optional[Path] = None
+        self.ranges_df = None
+        self.ranges_index = {}
 
         ensure_empresas_seed_applied()  # Sincroniza empresas.json con la semilla y conserva agregados
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -2088,6 +2227,45 @@ class RootApp(tk.Tk):
             f"Articulos con packs: {len(self.packs_index)}",
         )
 
+    def _choose_ranges_inicial(self):
+        """Pide el Excel/HTML LISTA DE PRECIOS y deja rangos disponibles."""
+        prefs = load_prefs()
+        path = filedialog.askopenfilename(
+            title="Selecciona la LISTA DE PRECIOS",
+            initialdir=prefs.get("last_dir"),
+            filetypes=[("Excel/HTML", "*.xls *.xlsx *.html *.htm"), ("Todos los archivos", "*.*")],
+        )
+        if not path:
+            return
+
+        try:
+            p = Path(path)
+            ranges_df, ranges_index = load_price_ranges_data(p)
+            self.ranges_path = p
+            self.ranges_df = ranges_df
+            self.ranges_index = ranges_index
+            prefs["last_dir"] = str(p.parent)
+            save_prefs(prefs)
+        except Exception as e:
+            self.ranges_path = None
+            self.ranges_df = None
+            self.ranges_index = {}
+            messagebox.showerror("Error al cargar lista de precios", str(e))
+            return
+
+        if hasattr(self, "start_view") and self.start_view is not None:
+            try:
+                self.start_view.set_ranges_cargado(True)
+            except Exception:
+                pass
+
+        messagebox.showinfo(
+            "Lista de precios cargada",
+            f"Se cargo correctamente la LISTA DE PRECIOS.\n\n"
+            f"Archivo: {self.ranges_path.name}\n"
+            f"Articulos con rangos: {len(self.ranges_index)}",
+        )
+
     def _show_start(self):
         self._clear()
         self.start_view = StartView(
@@ -2098,8 +2276,10 @@ class RootApp(tk.Tk):
             on_open_ingreso_masivo=self._ingreso_masivo_flow,
             on_load_listado=self._choose_listado_inicial,
             on_load_packs=self._choose_packs_inicial,
+            on_load_ranges=self._choose_ranges_inicial,
             listado_cargado=self.listado_path is not None,
             packs_cargado=bool(self.packs_index),
+            ranges_cargado=bool(self.ranges_index),
         )
 
     def _require_listado(self) -> bool:
@@ -2188,6 +2368,8 @@ class RootApp(tk.Tk):
             initial_db_path=db_path,
             packs_path=self.packs_path,
             packs_index=self.packs_index,
+            ranges_path=self.ranges_path,
+            ranges_index=self.ranges_index,
         )
 
 def is_ident_header(x: str) -> bool:
@@ -2220,7 +2402,7 @@ def clean_price(s: str) -> str:
 class TivendoWindow(ttk.Frame):
     def __init__(self, master, listado_path: Optional[Path] = None, go_home_cb=None):
         super().__init__(master)
-        self.master.title("Tivendo - Cambios masivos de precios (v92)")
+        self.master.title("Tivendo - Cambios masivos de precios (v93-dev)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
 
@@ -2832,7 +3014,7 @@ def buscar_siguiente_codigo_disponible(codigo_actual: str, codigos_catalogo_set,
 class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
     def __init__(self, master, catalogo_path: Optional[Path] = None, go_home_cb=None):
         super().__init__(master)
-        self.master.title("Tivendo - Ingreso Masivo de Artículos (v92)")
+        self.master.title("Tivendo - Ingreso Masivo de Artículos (v93-dev)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
 
@@ -3737,4 +3919,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
