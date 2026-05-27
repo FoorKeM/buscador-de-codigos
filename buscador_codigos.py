@@ -1,9 +1,9 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 """
-Buscador + Convertidor con gestión de Proveedores integrada (v92-dev)
-- v92-dev: integración inicial de Maestro de Packs.
+Buscador + Convertidor con gestión de Proveedores integrada (v92)
+- v92: integración inicial de Maestro de Packs.
     * Carga del Maestro de Packs desde el menú principal.
     * Cruce de artículos contra la columna "Código producto en pack".
     * Columna "Packs" en el buscador y ventana de packs vinculados.
@@ -15,8 +15,7 @@ Buscador + Convertidor con gestión de Proveedores integrada (v92-dev)
       códigos similares usando difflib (stdlib, sin dependencias nuevas).
     * Índice invertido en memoria: precalculado al cargar la base, acelera
       búsquedas de tokens exactos de O(n) a O(1).
-    * Historial de búsquedas por sesión: botón "Historial" abre ventana con
-      las últimas 20 búsquedas; doble-click reutiliza cualquiera.
+    * Botón único "Copiar..." para agrupar opciones de copiado.
     * Títulos de ventana actualizados a v91.
 """
 
@@ -37,7 +36,6 @@ import atexit
 import unicodedata
 import difflib
 import numpy as np
-from collections import deque
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -1175,7 +1173,7 @@ class SearchView(ttk.Frame):
     """Buscador con barra superior para el botón Volver (no desplaza el contenido)."""
     def __init__(self, master, go_home_cb, initial_db_path: Optional[Path], packs_path: Optional[Path] = None, packs_index: Optional[dict] = None):
         super().__init__(master)
-        self.master.title("Buscador de Códigos — MERCADO HOUSE (v92-dev)")
+        self.master.title("Buscador de Códigos — MERCADO HOUSE (v92)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
         self.prefs = load_prefs()
@@ -1193,7 +1191,6 @@ class SearchView(ttk.Frame):
             self.destroy(); go_home_cb(); return
 
         self.last_results = pd.DataFrame()
-        self._history: deque = deque(maxlen=20)
 
         # ===== Barra superior SOLO con "Volver" =====
         header = ttk.Frame(self, padding=(10,10,10,0))
@@ -1242,13 +1239,8 @@ class SearchView(ttk.Frame):
         ttk.Button(btns, text="Buscar por Proveedor", command=self.on_search).pack(side=tk.LEFT, padx=4)
         ttk.Button(btns, text="Buscar general", command=lambda: self.on_search(force_general=True)).pack(side=tk.LEFT, padx=4)
         ttk.Button(btns, text="Limpiar", command=self.on_clear).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btns, text="Historial", command=self._show_history).pack(side=tk.LEFT, padx=4)
         ttk.Button(btns, text="Ver packs vinculados", command=self.show_linked_packs).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btns, text="Copiar cód.barra (internos)", command=self.copy_barcodes_internos).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btns, text="Copiar cód.barra (externos)", command=self.copy_barcodes_externos).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btns, text="Copiar nombres + cod.barra", command=self.copy_nombre_interno).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btns, text="Copiar nombres", command=self.copy_nombres).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btns, text="Copiar NO ENCONTRADOS", command=self.copy_not_found_inputs).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btns, text="Copiar...", command=self.show_copy_menu).pack(side=tk.LEFT, padx=4)
 
         cols = ("codigo","nombre","barcode_interno","barcode_externo","empresa","packs","__input")
         self.tree = ttk.Treeview(self, columns=cols, show="headings", selectmode="extended")
@@ -1425,32 +1417,6 @@ class SearchView(ttk.Frame):
         self.var_status.set(self.status_db_text)
         self.last_results = pd.DataFrame()
 
-    def _show_history(self):
-        """Abre una ventana con el historial de búsquedas de la sesión."""
-        if not self._history:
-            messagebox.showinfo("Historial", "No hay búsquedas en el historial todavía.")
-            return
-        top = tk.Toplevel(self)
-        top.title("Historial de búsquedas")
-        top.resizable(False, False)
-        ttk.Label(top, text="Doble clic para repetir la búsqueda:").pack(padx=12, pady=(10,4), anchor="w")
-        lb = tk.Listbox(top, width=60, height=min(len(self._history), 15), selectmode="browse")
-        lb.pack(padx=12, pady=(0,4), fill="both", expand=True)
-        for entry in self._history:
-            lb.insert("end", entry)
-        def _use(event=None):
-            sel = lb.curselection()
-            if not sel:
-                return
-            query = lb.get(sel[0])
-            top.destroy()
-            self.txt_query.delete("1.0", "end")
-            self.txt_query.insert("1.0", query)
-            self.on_search()
-        lb.bind("<Double-Button-1>", _use)
-        ttk.Button(top, text="Usar seleccionado", command=_use).pack(pady=(0,10))
-        top.grab_set()
-
     def _selected_emp_id(self):
         m = re.search(r"\(Id\.?\s*(\d+)\)", self.cbo_emp.get())
         return m.group(1) if m else None
@@ -1551,7 +1517,6 @@ class SearchView(ttk.Frame):
                 return
             out = out.drop(columns=["__score"])
             out["__input"] = q
-            self._history.appendleft(q)
             self.populate(out.head(MAX_RESULTS), emp_id)
             return
 
@@ -1589,9 +1554,6 @@ class SearchView(ttk.Frame):
         drop_cols = [c for c in ("__score", "__pos") if c in out.columns]
         if drop_cols:
             out = out.drop(columns=drop_cols)
-        raw_query = raw.strip()
-        if raw_query:
-            self._history.appendleft(raw_query)
         self.populate(out.head(MAX_RESULTS), emp_id, not_found_count=nf)
         if nf and not by_barras and any(_looks_like_barcode(c) for c in codes):
             self.var_status.set(
@@ -1722,6 +1684,21 @@ class SearchView(ttk.Frame):
         self.clipboard_append(text)
         self.update()  # necesario en algunos sistemas para que el clipboard se actualice
         self.var_status.set(status_msg)
+
+    def show_copy_menu(self):
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="Códigos de barra internos", command=self.copy_barcodes_internos)
+        menu.add_command(label="Códigos de barra externos", command=self.copy_barcodes_externos)
+        menu.add_command(label="Nombres + código barra interno", command=self.copy_nombre_interno)
+        menu.add_command(label="Nombres", command=self.copy_nombres)
+        menu.add_separator()
+        menu.add_command(label="NO encontrados", command=self.copy_not_found_inputs)
+        try:
+            x = self.winfo_pointerx()
+            y = self.winfo_pointery()
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
 
     def _require_results(self) -> bool:
         """Devuelve True si hay resultados; muestra aviso y devuelve False si no."""
@@ -2243,7 +2220,7 @@ def clean_price(s: str) -> str:
 class TivendoWindow(ttk.Frame):
     def __init__(self, master, listado_path: Optional[Path] = None, go_home_cb=None):
         super().__init__(master)
-        self.master.title("Tivendo - Cambios masivos de precios (v92-dev)")
+        self.master.title("Tivendo - Cambios masivos de precios (v92)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
 
@@ -2855,7 +2832,7 @@ def buscar_siguiente_codigo_disponible(codigo_actual: str, codigos_catalogo_set,
 class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
     def __init__(self, master, catalogo_path: Optional[Path] = None, go_home_cb=None):
         super().__init__(master)
-        self.master.title("Tivendo - Ingreso Masivo de Artículos (v92-dev)")
+        self.master.title("Tivendo - Ingreso Masivo de Artículos (v92)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
 
@@ -3760,3 +3737,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
