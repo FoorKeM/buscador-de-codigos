@@ -2,10 +2,11 @@
 # -*- coding: utf-8 -*-
 
 """
-Buscador + Convertidor con gestión de Proveedores integrada (v93-dev)
-- v93-dev: vista de rangos desde Lista de Precios.
+Buscador + Convertidor con gestión de Proveedores integrada (v93)
+- v93: vista de rangos desde Lista de Precios y auto-actualización.
     * Carga de Lista de Precios desde el menú principal.
     * Columnas Rango 1 y Rango 2 en el buscador.
+    * Aviso de nueva versión desde GitHub Releases para el ejecutable.
 
 - v92: integración inicial de Maestro de Packs.
     * Carga del Maestro de Packs desde el menú principal.
@@ -34,11 +35,13 @@ import sys
 import json
 import re
 import os
+import subprocess
 import threading
 import tempfile
 import atexit
 import unicodedata
 import difflib
+import urllib.request
 import numpy as np
 from html.parser import HTMLParser
 from pathlib import Path
@@ -61,6 +64,9 @@ _RE_NON_ALNUM = re.compile(r"[^A-Z0-9]")    # elimina no-alfanuméricos (normali
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
 TMP_DIR      = Path(tempfile.gettempdir())  # directorio temporal del sistema
+APP_VERSION  = "v93"
+GITHUB_REPO  = "FoorKeM/buscador-de-codigos"
+LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
 # Cache simple para evitar recargar la BASE DE DATOS desde disco en la misma sesión
 _LOAD_DATA_CACHE = {
@@ -68,6 +74,80 @@ _LOAD_DATA_CACHE = {
     'df': None,     # type: Optional[pd.DataFrame]
     'index': None,  # type: Optional[Dict[str, List[int]]]  índice invertido de tokens
 }
+
+
+def _version_tuple(version: str):
+    nums = [int(x) for x in re.findall(r"\d+", str(version or ""))]
+    return tuple(nums or [0])
+
+
+def _is_frozen_app() -> bool:
+    return bool(getattr(sys, "frozen", False))
+
+
+def _get_latest_release_info():
+    req = urllib.request.Request(
+        LATEST_RELEASE_API,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": f"BuscadorCodigos/{APP_VERSION}",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=12) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+
+    tag = str(data.get("tag_name", "")).strip()
+    exe_asset = None
+    for asset in data.get("assets", []):
+        name = str(asset.get("name", ""))
+        if name.lower().endswith(".exe"):
+            exe_asset = asset
+            break
+    if not tag or exe_asset is None:
+        return None
+    return {
+        "tag": tag,
+        "name": exe_asset.get("name") or f"BuscadorCodigos-{tag}.exe",
+        "url": exe_asset.get("browser_download_url"),
+        "release_url": data.get("html_url"),
+    }
+
+
+def _download_update_asset(url: str, filename: str) -> Path:
+    update_dir = Path(tempfile.gettempdir()) / "BuscadorCodigosUpdate"
+    update_dir.mkdir(parents=True, exist_ok=True)
+    dest = update_dir / filename
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": f"BuscadorCodigos/{APP_VERSION}"},
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp, open(dest, "wb") as fh:
+        while True:
+            chunk = resp.read(1024 * 1024)
+            if not chunk:
+                break
+            fh.write(chunk)
+    return dest
+
+
+def _write_update_script(current_exe: Path, new_exe: Path) -> Path:
+    script_path = Path(tempfile.gettempdir()) / "BuscadorCodigosUpdate" / "actualizar_buscador.bat"
+    script = f"""@echo off
+setlocal
+set "OLD_EXE={current_exe}"
+set "NEW_EXE={new_exe}"
+ping 127.0.0.1 -n 3 > nul
+:retry
+move /Y "%NEW_EXE%" "%OLD_EXE%" > nul
+if errorlevel 1 (
+  ping 127.0.0.1 -n 2 > nul
+  goto retry
+)
+start "" "%OLD_EXE%"
+del "%~f0"
+"""
+    script_path.write_text(script, encoding="utf-8")
+    return script_path
 
 # =====================================================
 #  Semilla de proveedores (incluida en el programa)
@@ -1293,7 +1373,7 @@ class SearchView(ttk.Frame):
         ranges_index: Optional[dict] = None,
     ):
         super().__init__(master)
-        self.master.title("Buscador de Códigos — MERCADO HOUSE (v93-dev)")
+        self.master.title("Buscador de Códigos — MERCADO HOUSE (v93)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
         self.prefs = load_prefs()
@@ -2144,6 +2224,7 @@ class RootApp(tk.Tk):
 
         # La selección del LISTADO DE ARTÍCULOS ahora se hace desde el menú principal
         self._show_start()
+        self.after(1500, self._start_update_check)
 
     def _on_close(self):
         try:
@@ -2153,6 +2234,84 @@ class RootApp(tk.Tk):
         except Exception:
             pass
         self.destroy()
+
+    def _start_update_check(self):
+        if not _is_frozen_app():
+            return
+
+        def worker():
+            try:
+                latest = _get_latest_release_info()
+                if not latest or not latest.get("url"):
+                    return
+                if _version_tuple(latest["tag"]) <= _version_tuple(APP_VERSION):
+                    return
+                self.after(0, lambda: self._prompt_update(latest))
+            except Exception:
+                # La app no debe molestar si no hay internet o GitHub no responde.
+                return
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _prompt_update(self, latest: dict):
+        tag = latest.get("tag", "")
+        if not messagebox.askyesno(
+            "Nueva versión disponible",
+            f"Existe una nueva versión disponible: {tag}.\n\n"
+            "¿Quieres descargarla e instalarla ahora?",
+        ):
+            return
+        self._download_and_install_update(latest)
+
+    def _download_and_install_update(self, latest: dict):
+        progress = tk.Toplevel(self)
+        progress.title("Actualizando")
+        progress.resizable(False, False)
+        progress.transient(self)
+        progress.grab_set()
+        frm = ttk.Frame(progress, padding=16)
+        frm.pack(fill="both", expand=True)
+        ttk.Label(frm, text=f"Descargando {latest.get('tag', 'nueva versión')}…").pack(anchor="w")
+        pb = ttk.Progressbar(frm, mode="indeterminate", length=320)
+        pb.pack(fill="x", pady=(10, 0))
+        pb.start(10)
+
+        def worker():
+            try:
+                current_exe = Path(sys.executable).resolve()
+                new_exe = _download_update_asset(latest["url"], latest["name"])
+                script = _write_update_script(current_exe, new_exe)
+
+                def finish():
+                    try:
+                        pb.stop()
+                        progress.destroy()
+                    except Exception:
+                        pass
+                    try:
+                        subprocess.Popen(
+                            ["cmd", "/c", str(script)],
+                            close_fds=True,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                        )
+                    finally:
+                        self.destroy()
+
+                self.after(0, finish)
+            except Exception as e:
+                def fail():
+                    try:
+                        pb.stop()
+                        progress.destroy()
+                    except Exception:
+                        pass
+                    messagebox.showerror(
+                        "Error al actualizar",
+                        f"No se pudo descargar o instalar la actualización.\n\nDetalle: {e}",
+                    )
+                self.after(0, fail)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _choose_listado_inicial(self):
         """Pide el Excel de LISTADO DE ARTÍCULOS y actualiza el estado de los botones."""
@@ -2402,7 +2561,7 @@ def clean_price(s: str) -> str:
 class TivendoWindow(ttk.Frame):
     def __init__(self, master, listado_path: Optional[Path] = None, go_home_cb=None):
         super().__init__(master)
-        self.master.title("Tivendo - Cambios masivos de precios (v93-dev)")
+        self.master.title("Tivendo - Cambios masivos de precios (v93)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
 
@@ -3014,7 +3173,7 @@ def buscar_siguiente_codigo_disponible(codigo_actual: str, codigos_catalogo_set,
 class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
     def __init__(self, master, catalogo_path: Optional[Path] = None, go_home_cb=None):
         super().__init__(master)
-        self.master.title("Tivendo - Ingreso Masivo de Artículos (v93-dev)")
+        self.master.title("Tivendo - Ingreso Masivo de Artículos (v93)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
 
