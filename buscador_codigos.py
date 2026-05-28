@@ -2,7 +2,9 @@
 # -*- coding: utf-8 -*-
 
 """
-Buscador + Convertidor con gestión de Proveedores integrada (v98)
+Buscador + Convertidor con gestión de Proveedores integrada (v99)
+- v99: actualizador sin reinicio automático para evitar fallos de extracción PyInstaller.
+
 - v98: instala la nueva versión como archivo aparte y borra la anterior solo al iniciar bien.
 
 - v97: guarda backups del actualizador en carpeta temporal para no confundirlos con la app.
@@ -50,7 +52,7 @@ import sys
 import json
 import re
 import os
-import subprocess
+import shutil
 import threading
 import tempfile
 import atexit
@@ -80,7 +82,7 @@ _RE_NON_ALNUM = re.compile(r"[^A-Z0-9]")    # elimina no-alfanuméricos (normali
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
 TMP_DIR      = Path(tempfile.gettempdir())  # directorio temporal del sistema
-APP_VERSION  = "v98"
+APP_VERSION  = "v99"
 GITHUB_REPO  = "FoorKeM/buscador-de-codigos"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
@@ -178,13 +180,17 @@ def _download_update_asset(url: str, filename: str, expected_size: int = 0) -> P
     return dest
 
 
-def _write_update_script(current_exe: Path, new_exe: Path, version_tag: str = "") -> Path:
+def _install_downloaded_update(current_exe: Path, new_exe: Path, version_tag: str = "") -> Path:
+    install_dir = current_exe.parent
+    installed_exe = install_dir / new_exe.name
+    if installed_exe.resolve() == current_exe.resolve():
+        installed_exe = install_dir / f"{current_exe.stem}-{version_tag or 'nuevo'}{current_exe.suffix}"
+
+    shutil.copy2(new_exe, installed_exe)
+    _validate_downloaded_exe(installed_exe, new_exe.stat().st_size)
+
     update_dir = Path(tempfile.gettempdir()) / "BuscadorCodigosUpdate"
     update_dir.mkdir(parents=True, exist_ok=True)
-    script_path = update_dir / "actualizar_buscador.bat"
-    suffix = re.sub(r"[^A-Za-z0-9_.-]", "", version_tag or "backup")
-    backup_exe = update_dir / f"{current_exe.stem}.backup-{suffix}{current_exe.suffix}"
-    installed_exe = current_exe.with_name(new_exe.name)
     marker_path = update_dir / "successful_update_marker.json"
     marker_path.write_text(
         json.dumps(
@@ -197,27 +203,11 @@ def _write_update_script(current_exe: Path, new_exe: Path, version_tag: str = ""
         ),
         encoding="utf-8",
     )
-    script = f"""@echo off
-setlocal
-set "OLD_EXE={current_exe}"
-set "NEW_EXE={new_exe}"
-set "BAK_EXE={backup_exe}"
-set "INSTALLED_EXE={installed_exe}"
-ping 127.0.0.1 -n 3 > nul
-:backup
-copy /Y "%OLD_EXE%" "%BAK_EXE%" > nul
-:retry
-copy /Y "%NEW_EXE%" "%INSTALLED_EXE%" > nul
-if errorlevel 1 (
-  ping 127.0.0.1 -n 2 > nul
-  goto retry
-)
-start "" "%INSTALLED_EXE%"
-del "%NEW_EXE%" > nul 2> nul
-del "%~f0"
-"""
-    script_path.write_text(script, encoding="utf-8")
-    return script_path
+    try:
+        new_exe.unlink()
+    except Exception:
+        pass
+    return installed_exe
 
 
 def _cleanup_successful_update_backups():
@@ -1483,7 +1473,7 @@ class SearchView(ttk.Frame):
         ranges_index: Optional[dict] = None,
     ):
         super().__init__(master)
-        self.master.title("Buscador de Códigos — MERCADO HOUSE (v98)")
+        self.master.title("Buscador de Códigos — MERCADO HOUSE (v99)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
         self.prefs = load_prefs()
@@ -2528,7 +2518,7 @@ class RootApp(tk.Tk):
         if not messagebox.askyesno(
             "Nueva versión disponible",
             f"Existe una nueva versión disponible: {tag}.\n\n"
-            "¿Quieres descargarla e instalarla ahora?",
+            "¿Quieres descargarla y dejarla lista para abrir?",
         ):
             return
         self._download_and_install_update(latest)
@@ -2550,7 +2540,7 @@ class RootApp(tk.Tk):
             try:
                 current_exe = Path(sys.executable).resolve()
                 new_exe = _download_update_asset(latest["url"], latest["name"], int(latest.get("size") or 0))
-                script = _write_update_script(current_exe, new_exe, latest.get("tag", ""))
+                installed_exe = _install_downloaded_update(current_exe, new_exe, latest.get("tag", ""))
 
                 def finish():
                     try:
@@ -2558,14 +2548,13 @@ class RootApp(tk.Tk):
                         progress.destroy()
                     except Exception:
                         pass
-                    try:
-                        subprocess.Popen(
-                            ["cmd", "/c", str(script)],
-                            close_fds=True,
-                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                        )
-                    finally:
-                        self.destroy()
+                    messagebox.showinfo(
+                        "Actualización lista",
+                        "La nueva versión ya quedó descargada.\n\n"
+                        f"Archivo nuevo:\n{installed_exe}\n\n"
+                        "Se cerrará esta versión. Abre el archivo nuevo para continuar.",
+                    )
+                    self.destroy()
 
                 self.after(0, finish)
             except Exception as e:
@@ -2831,7 +2820,7 @@ def clean_price(s: str) -> str:
 class TivendoWindow(ttk.Frame):
     def __init__(self, master, listado_path: Optional[Path] = None, go_home_cb=None):
         super().__init__(master)
-        self.master.title("Tivendo - Cambios masivos de precios (v98)")
+        self.master.title("Tivendo - Cambios masivos de precios (v99)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
 
@@ -3443,7 +3432,7 @@ def buscar_siguiente_codigo_disponible(codigo_actual: str, codigos_catalogo_set,
 class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
     def __init__(self, master, catalogo_path: Optional[Path] = None, go_home_cb=None):
         super().__init__(master)
-        self.master.title("Tivendo - Ingreso Masivo de Artículos (v98)")
+        self.master.title("Tivendo - Ingreso Masivo de Artículos (v99)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
 
