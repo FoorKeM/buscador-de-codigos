@@ -2,7 +2,12 @@
 # -*- coding: utf-8 -*-
 
 """
-Buscador + Convertidor con gestión de Proveedores integrada (v93)
+Buscador + Convertidor con gestión de Proveedores integrada (v94)
+- v94: mejoras de uso en buscador y menú contextual.
+    * Columnas de resultados con ancho automático.
+    * Menú contextual inteligente para copiar la columna seleccionada.
+    * Limpieza de selección al hacer click en espacio blanco.
+
 - v93: vista de rangos desde Lista de Precios y auto-actualización.
     * Carga de Lista de Precios desde el menú principal.
     * Columnas Rango 1 y Rango 2 en el buscador.
@@ -65,7 +70,7 @@ _RE_NON_ALNUM = re.compile(r"[^A-Z0-9]")    # elimina no-alfanuméricos (normali
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
 TMP_DIR      = Path(tempfile.gettempdir())  # directorio temporal del sistema
-APP_VERSION  = "v93"
+APP_VERSION  = "v94"
 GITHUB_REPO  = "FoorKeM/buscador-de-codigos"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
@@ -1374,7 +1379,7 @@ class SearchView(ttk.Frame):
         ranges_index: Optional[dict] = None,
     ):
         super().__init__(master)
-        self.master.title("Buscador de Códigos — MERCADO HOUSE (v93)")
+        self.master.title("Buscador de Códigos — MERCADO HOUSE (v94)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
         self.prefs = load_prefs()
@@ -2721,7 +2726,7 @@ def clean_price(s: str) -> str:
 class TivendoWindow(ttk.Frame):
     def __init__(self, master, listado_path: Optional[Path] = None, go_home_cb=None):
         super().__init__(master)
-        self.master.title("Tivendo - Cambios masivos de precios (v93)")
+        self.master.title("Tivendo - Cambios masivos de precios (v94)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
 
@@ -3333,7 +3338,7 @@ def buscar_siguiente_codigo_disponible(codigo_actual: str, codigos_catalogo_set,
 class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
     def __init__(self, master, catalogo_path: Optional[Path] = None, go_home_cb=None):
         super().__init__(master)
-        self.master.title("Tivendo - Ingreso Masivo de Artículos (v93)")
+        self.master.title("Tivendo - Ingreso Masivo de Artículos (v94)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
 
