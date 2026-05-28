@@ -1413,6 +1413,8 @@ class SearchView(ttk.Frame):
         vsb = ttk.Scrollbar(area, orient="vertical", command=self.txt_query.yview)
         vsb.grid(row=0, column=1, sticky="ns")
         self.txt_query.configure(yscrollcommand=vsb.set)
+        self.txt_query.bind("<Button-3>", self.show_query_context_menu)
+        self.txt_query.bind("<Button-2>", self.show_query_context_menu)
 
         opts = ttk.Frame(content); opts.grid(row=2, column=0, sticky="w", pady=(6,0))
         self.exact = tk.BooleanVar(value=bool(self.prefs.get("exact", True)))
@@ -1496,6 +1498,13 @@ class SearchView(ttk.Frame):
         self.menu.add_command(label="Eliminar fila(s) seleccionada(s)", command=self.remove_selected_rows)
         self.tree.bind("<Button-3>", self.show_context_menu)
         self.tree.bind("<Button-2>", self.show_context_menu)
+
+        self.query_menu = tk.Menu(self, tearoff=0)
+        self.query_menu.add_command(label="Copiar código seleccionado", command=self.copy_selected_query_code)
+        self.query_menu.add_command(label="Pegar", command=lambda: self.txt_query.event_generate("<<Paste>>"))
+        self.query_menu.add_separator()
+        self.query_menu.add_command(label="Eliminar código seleccionado", command=self.delete_selected_query_code)
+        self.query_menu.add_command(label="Limpiar códigos", command=lambda: self.txt_query.delete("1.0", "end"))
 
         self.bind_all("<Return>", lambda e: self.on_search())
         self.bind_all("<Control-s>", lambda e: self.export_csv())
@@ -1590,6 +1599,86 @@ class SearchView(ttk.Frame):
                 self.menu.tk_popup(event.x_root, event.y_root)
         finally:
             self.menu.grab_release()
+
+    def _query_has_selection_at(self, index: str) -> bool:
+        ranges = self.txt_query.tag_ranges("sel")
+        if len(ranges) != 2:
+            return False
+        return (
+            self.txt_query.compare(ranges[0], "<=", index)
+            and self.txt_query.compare(index, "<=", ranges[1])
+        )
+
+    def _select_query_code_at(self, index: str) -> bool:
+        text = self.txt_query.get("1.0", "end-1c")
+        if not text:
+            return False
+
+        try:
+            pos = int(self.txt_query.count("1.0", index, "chars")[0])
+        except Exception:
+            return False
+
+        pos = max(0, min(pos, len(text) - 1))
+        separators = {",", "\t", "\n"}
+        if text[pos] in separators:
+            if pos > 0 and text[pos - 1] not in separators:
+                pos -= 1
+            else:
+                nxt = pos + 1
+                while nxt < len(text) and text[nxt] in separators.union({" "}):
+                    nxt += 1
+                if nxt >= len(text):
+                    return False
+                pos = nxt
+
+        start = pos
+        while start > 0 and text[start - 1] not in separators:
+            start -= 1
+        end = pos + 1
+        while end < len(text) and text[end] not in separators:
+            end += 1
+
+        while start < end and text[start].isspace():
+            start += 1
+        while end > start and text[end - 1].isspace():
+            end -= 1
+        if start >= end:
+            return False
+
+        start_idx = f"1.0 + {start} chars"
+        end_idx = f"1.0 + {end} chars"
+        self.txt_query.tag_remove("sel", "1.0", "end")
+        self.txt_query.tag_add("sel", start_idx, end_idx)
+        self.txt_query.mark_set("insert", end_idx)
+        self.txt_query.see(start_idx)
+        return True
+
+    def show_query_context_menu(self, event):
+        """Muestra acciones para el código pegado/escrito bajo el cursor."""
+        try:
+            self.txt_query.focus_set()
+            index = self.txt_query.index(f"@{event.x},{event.y}")
+            if not self._query_has_selection_at(index):
+                self._select_query_code_at(index)
+            self.query_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.query_menu.grab_release()
+        return "break"
+
+    def copy_selected_query_code(self):
+        try:
+            text = self.txt_query.get("sel.first", "sel.last")
+        except tk.TclError:
+            return
+        self._copy_to_clipboard(text, "Código seleccionado copiado al portapapeles.")
+
+    def delete_selected_query_code(self):
+        try:
+            self.txt_query.delete("sel.first", "sel.last")
+            self.txt_query.tag_remove("sel", "1.0", "end")
+        except tk.TclError:
+            return
 
     def copy_selected_rows(self):
         sels = self.tree.selection()
