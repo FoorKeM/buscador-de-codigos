@@ -1492,13 +1492,16 @@ class SearchView(ttk.Frame):
 
         self.menu = tk.Menu(self, tearoff=0)
         self.menu.add_command(label="Copiar fila(s) seleccionada(s)", command=self.copy_selected_rows)
-        self.menu.add_command(label="Eliminar de la lista", command=self.remove_selected_rows)
+        self.menu.add_separator()
+        self.menu.add_command(label="Eliminar fila(s) seleccionada(s)", command=self.remove_selected_rows)
         self.tree.bind("<Button-3>", self.show_context_menu)
+        self.tree.bind("<Button-2>", self.show_context_menu)
 
         self.bind_all("<Return>", lambda e: self.on_search())
         self.bind_all("<Control-s>", lambda e: self.export_csv())
         self.bind_all("<Control-l>", lambda e: self.on_clear())
         self.tree.bind("<Control-c>", lambda e: self.copy_selected_rows())
+        self.tree.bind("<Delete>", lambda e: self.remove_selected_rows())
         self.txt_query.focus_set()
 
     def on_emp_search(self, event=None):
@@ -1580,8 +1583,10 @@ class SearchView(ttk.Frame):
         try:
             iid = self.tree.identify_row(event.y)
             if iid:
+                self.tree.focus(iid)
                 if iid not in self.tree.selection():
                     self.tree.selection_set(iid)
+            if self.tree.selection():
                 self.menu.tk_popup(event.x_root, event.y_root)
         finally:
             self.menu.grab_release()
