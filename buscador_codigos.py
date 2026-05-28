@@ -1445,14 +1445,13 @@ class SearchView(ttk.Frame):
         ttk.Button(btns, text="Ver packs vinculados", command=self.show_linked_packs).pack(side=tk.LEFT, padx=4)
         ttk.Button(btns, text="Copiar...", command=self.show_copy_menu).pack(side=tk.LEFT, padx=4)
 
-        cols = ("codigo","nombre","barcode_interno","barcode_externo","empresa","packs","rango1","rango2","__input")
+        cols = ("codigo","nombre","barcode_interno","barcode_externo","empresa","packs","rango1","rango2")
         self.tree = ttk.Treeview(self, columns=cols, show="headings", selectmode="extended")
-        for c, t in zip(cols, ["Código","Nombre","Cód. barra interno","Cód. barra externo","Empresa","Packs","Rango 1","Rango 2","Código buscado"]):
+        for c, t in zip(cols, ["Código","Nombre","Cód. barra interno","Cód. barra externo","Empresa","Packs","Rango 1","Rango 2"]):
             self.tree.heading(c, text=t)
         self.tree.heading("packs", text="Packs")
         self.tree.heading("rango1", text="Rango 1")
         self.tree.heading("rango2", text="Rango 2")
-        self.tree.heading("__input", text="Codigo buscado")
         self._tree_headers = {
             "codigo": "Código",
             "nombre": "Nombre",
@@ -1462,7 +1461,6 @@ class SearchView(ttk.Frame):
             "packs": "Packs",
             "rango1": "Rango 1",
             "rango2": "Rango 2",
-            "__input": "Codigo buscado",
         }
         self._tree_width_limits = {
             "codigo": (95, 220),
@@ -1473,7 +1471,6 @@ class SearchView(ttk.Frame):
             "packs": (70, 105),
             "rango1": (90, 170),
             "rango2": (90, 170),
-            "__input": (120, 240),
         }
         for c in cols:
             min_width, _max_width = self._tree_width_limits[c]
@@ -1730,7 +1727,7 @@ class SearchView(ttk.Frame):
             rango1 = range_rec.get("rango1", "")
             rango2 = range_rec.get("rango2", "")
             tags = ("dup_input",) if inp.strip() in dup_inputs else ()
-            ins("", "end", values=(cod, nom, bi, be, emp_txt, pack_txt, rango1, rango2, inp), tags=tags)
+            ins("", "end", values=(cod, nom, bi, be, emp_txt, pack_txt, rango1, rango2), tags=tags)
 
         self._autosize_result_columns()
 
