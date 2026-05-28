@@ -2,7 +2,9 @@
 # -*- coding: utf-8 -*-
 
 """
-Buscador + Convertidor con gestión de Proveedores integrada (v96)
+Buscador + Convertidor con gestión de Proveedores integrada (v97)
+- v97: guarda backups del actualizador en carpeta temporal para no confundirlos con la app.
+
 - v96: limpia backups antiguos tras una actualización exitosa.
 
 - v95: actualizador protegido contra descargas incompletas.
@@ -76,7 +78,7 @@ _RE_NON_ALNUM = re.compile(r"[^A-Z0-9]")    # elimina no-alfanuméricos (normali
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
 TMP_DIR      = Path(tempfile.gettempdir())  # directorio temporal del sistema
-APP_VERSION  = "v96"
+APP_VERSION  = "v97"
 GITHUB_REPO  = "FoorKeM/buscador-de-codigos"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
@@ -175,9 +177,11 @@ def _download_update_asset(url: str, filename: str, expected_size: int = 0) -> P
 
 
 def _write_update_script(current_exe: Path, new_exe: Path, version_tag: str = "") -> Path:
-    script_path = Path(tempfile.gettempdir()) / "BuscadorCodigosUpdate" / "actualizar_buscador.bat"
+    update_dir = Path(tempfile.gettempdir()) / "BuscadorCodigosUpdate"
+    update_dir.mkdir(parents=True, exist_ok=True)
+    script_path = update_dir / "actualizar_buscador.bat"
     suffix = re.sub(r"[^A-Za-z0-9_.-]", "", version_tag or "backup")
-    backup_exe = current_exe.with_name(f"{current_exe.stem}.backup-{suffix}{current_exe.suffix}")
+    backup_exe = update_dir / f"{current_exe.stem}.backup-{suffix}{current_exe.suffix}"
     script = f"""@echo off
 setlocal
 set "OLD_EXE={current_exe}"
@@ -216,12 +220,13 @@ def _cleanup_successful_update_backups():
             except Exception:
                 pass
     if update_dir.exists():
-        for path in update_dir.glob("*.download"):
-            try:
-                path.unlink()
-            except Exception:
-                pass
-        for path in update_dir.glob("validated-test-*.exe"):
+        for pattern in ("*.download", "*.backup-*.exe", "validated-test-*.exe"):
+            for path in update_dir.glob(pattern):
+                try:
+                    path.unlink()
+                except Exception:
+                    pass
+        for path in update_dir.glob("test-download-*.exe"):
             try:
                 path.unlink()
             except Exception:
@@ -1451,7 +1456,7 @@ class SearchView(ttk.Frame):
         ranges_index: Optional[dict] = None,
     ):
         super().__init__(master)
-        self.master.title("Buscador de Códigos — MERCADO HOUSE (v96)")
+        self.master.title("Buscador de Códigos — MERCADO HOUSE (v97)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
         self.prefs = load_prefs()
@@ -2799,7 +2804,7 @@ def clean_price(s: str) -> str:
 class TivendoWindow(ttk.Frame):
     def __init__(self, master, listado_path: Optional[Path] = None, go_home_cb=None):
         super().__init__(master)
-        self.master.title("Tivendo - Cambios masivos de precios (v96)")
+        self.master.title("Tivendo - Cambios masivos de precios (v97)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
 
@@ -3411,7 +3416,7 @@ def buscar_siguiente_codigo_disponible(codigo_actual: str, codigos_catalogo_set,
 class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
     def __init__(self, master, catalogo_path: Optional[Path] = None, go_home_cb=None):
         super().__init__(master)
-        self.master.title("Tivendo - Ingreso Masivo de Artículos (v96)")
+        self.master.title("Tivendo - Ingreso Masivo de Artículos (v97)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
 
