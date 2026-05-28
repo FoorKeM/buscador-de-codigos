@@ -2,7 +2,11 @@
 # -*- coding: utf-8 -*-
 
 """
-Buscador + Convertidor con gestión de Proveedores integrada (v94)
+Buscador + Convertidor con gestión de Proveedores integrada (v95)
+- v95: actualizador protegido contra descargas incompletas.
+    * Valida tamaño y cabecera del ejecutable antes de reemplazar.
+    * Conserva backup del ejecutable anterior durante la actualización.
+
 - v94: mejoras de uso en buscador y menú contextual.
     * Columnas de resultados con ancho automático.
     * Menú contextual inteligente para copiar la columna seleccionada.
@@ -70,7 +74,7 @@ _RE_NON_ALNUM = re.compile(r"[^A-Z0-9]")    # elimina no-alfanuméricos (normali
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
 TMP_DIR      = Path(tempfile.gettempdir())  # directorio temporal del sistema
-APP_VERSION  = "v94"
+APP_VERSION  = "v95"
 GITHUB_REPO  = "FoorKeM/buscador-de-codigos"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
@@ -116,35 +120,72 @@ def _get_latest_release_info():
         "name": exe_asset.get("name") or f"BuscadorCodigos-{tag}.exe",
         "url": exe_asset.get("browser_download_url"),
         "release_url": data.get("html_url"),
+        "size": int(exe_asset.get("size") or 0),
     }
 
 
-def _download_update_asset(url: str, filename: str) -> Path:
+def _validate_downloaded_exe(path: Path, expected_size: int = 0):
+    actual_size = path.stat().st_size if path.exists() else 0
+    if expected_size and actual_size != expected_size:
+        raise RuntimeError(
+            f"La descarga quedo incompleta ({actual_size:,} de {expected_size:,} bytes)."
+        )
+    if actual_size < 10 * 1024 * 1024:
+        raise RuntimeError(f"La descarga no parece ser el ejecutable completo ({actual_size:,} bytes).")
+    with open(path, "rb") as fh:
+        if fh.read(2) != b"MZ":
+            raise RuntimeError("El archivo descargado no parece ser un ejecutable Windows valido.")
+
+
+def _download_update_asset(url: str, filename: str, expected_size: int = 0) -> Path:
     update_dir = Path(tempfile.gettempdir()) / "BuscadorCodigosUpdate"
     update_dir.mkdir(parents=True, exist_ok=True)
     dest = update_dir / filename
+    tmp_dest = dest.with_suffix(dest.suffix + ".download")
     req = urllib.request.Request(
         url,
         headers={"User-Agent": f"BuscadorCodigos/{APP_VERSION}"},
     )
-    with urllib.request.urlopen(req, timeout=60) as resp, open(dest, "wb") as fh:
+    bytes_written = 0
+    with urllib.request.urlopen(req, timeout=60) as resp, open(tmp_dest, "wb") as fh:
         while True:
             chunk = resp.read(1024 * 1024)
             if not chunk:
                 break
             fh.write(chunk)
+            bytes_written += len(chunk)
+    if expected_size and bytes_written != expected_size:
+        try:
+            tmp_dest.unlink()
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"La descarga quedo incompleta ({bytes_written:,} de {expected_size:,} bytes)."
+        )
+    _validate_downloaded_exe(tmp_dest, expected_size)
+    if dest.exists():
+        try:
+            dest.unlink()
+        except Exception:
+            pass
+    tmp_dest.replace(dest)
     return dest
 
 
-def _write_update_script(current_exe: Path, new_exe: Path) -> Path:
+def _write_update_script(current_exe: Path, new_exe: Path, version_tag: str = "") -> Path:
     script_path = Path(tempfile.gettempdir()) / "BuscadorCodigosUpdate" / "actualizar_buscador.bat"
+    suffix = re.sub(r"[^A-Za-z0-9_.-]", "", version_tag or "backup")
+    backup_exe = current_exe.with_name(f"{current_exe.stem}.backup-{suffix}{current_exe.suffix}")
     script = f"""@echo off
 setlocal
 set "OLD_EXE={current_exe}"
 set "NEW_EXE={new_exe}"
+set "BAK_EXE={backup_exe}"
 ping 127.0.0.1 -n 3 > nul
+:backup
+copy /Y "%OLD_EXE%" "%BAK_EXE%" > nul
 :retry
-move /Y "%NEW_EXE%" "%OLD_EXE%" > nul
+copy /Y "%NEW_EXE%" "%OLD_EXE%" > nul
 if errorlevel 1 (
   ping 127.0.0.1 -n 2 > nul
   goto retry
@@ -1379,7 +1420,7 @@ class SearchView(ttk.Frame):
         ranges_index: Optional[dict] = None,
     ):
         super().__init__(master)
-        self.master.title("Buscador de Códigos — MERCADO HOUSE (v94)")
+        self.master.title("Buscador de Códigos — MERCADO HOUSE (v95)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
         self.prefs = load_prefs()
@@ -2444,8 +2485,8 @@ class RootApp(tk.Tk):
         def worker():
             try:
                 current_exe = Path(sys.executable).resolve()
-                new_exe = _download_update_asset(latest["url"], latest["name"])
-                script = _write_update_script(current_exe, new_exe)
+                new_exe = _download_update_asset(latest["url"], latest["name"], int(latest.get("size") or 0))
+                script = _write_update_script(current_exe, new_exe, latest.get("tag", ""))
 
                 def finish():
                     try:
@@ -2726,7 +2767,7 @@ def clean_price(s: str) -> str:
 class TivendoWindow(ttk.Frame):
     def __init__(self, master, listado_path: Optional[Path] = None, go_home_cb=None):
         super().__init__(master)
-        self.master.title("Tivendo - Cambios masivos de precios (v94)")
+        self.master.title("Tivendo - Cambios masivos de precios (v95)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
 
@@ -3338,7 +3379,7 @@ def buscar_siguiente_codigo_disponible(codigo_actual: str, codigos_catalogo_set,
 class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
     def __init__(self, master, catalogo_path: Optional[Path] = None, go_home_cb=None):
         super().__init__(master)
-        self.master.title("Tivendo - Ingreso Masivo de Artículos (v94)")
+        self.master.title("Tivendo - Ingreso Masivo de Artículos (v95)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
 
