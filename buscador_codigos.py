@@ -2,7 +2,9 @@
 # -*- coding: utf-8 -*-
 
 """
-Buscador + Convertidor con gestión de Proveedores integrada (v97)
+Buscador + Convertidor con gestión de Proveedores integrada (v98)
+- v98: instala la nueva versión como archivo aparte y borra la anterior solo al iniciar bien.
+
 - v97: guarda backups del actualizador en carpeta temporal para no confundirlos con la app.
 
 - v96: limpia backups antiguos tras una actualización exitosa.
@@ -78,7 +80,7 @@ _RE_NON_ALNUM = re.compile(r"[^A-Z0-9]")    # elimina no-alfanuméricos (normali
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
 TMP_DIR      = Path(tempfile.gettempdir())  # directorio temporal del sistema
-APP_VERSION  = "v97"
+APP_VERSION  = "v98"
 GITHUB_REPO  = "FoorKeM/buscador-de-codigos"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
@@ -182,21 +184,35 @@ def _write_update_script(current_exe: Path, new_exe: Path, version_tag: str = ""
     script_path = update_dir / "actualizar_buscador.bat"
     suffix = re.sub(r"[^A-Za-z0-9_.-]", "", version_tag or "backup")
     backup_exe = update_dir / f"{current_exe.stem}.backup-{suffix}{current_exe.suffix}"
+    installed_exe = current_exe.with_name(new_exe.name)
+    marker_path = update_dir / "successful_update_marker.json"
+    marker_path.write_text(
+        json.dumps(
+            {
+                "old_exe": str(current_exe),
+                "installed_exe": str(installed_exe),
+                "version": version_tag,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
     script = f"""@echo off
 setlocal
 set "OLD_EXE={current_exe}"
 set "NEW_EXE={new_exe}"
 set "BAK_EXE={backup_exe}"
+set "INSTALLED_EXE={installed_exe}"
 ping 127.0.0.1 -n 3 > nul
 :backup
 copy /Y "%OLD_EXE%" "%BAK_EXE%" > nul
 :retry
-copy /Y "%NEW_EXE%" "%OLD_EXE%" > nul
+copy /Y "%NEW_EXE%" "%INSTALLED_EXE%" > nul
 if errorlevel 1 (
   ping 127.0.0.1 -n 2 > nul
   goto retry
 )
-start "" "%OLD_EXE%"
+start "" "%INSTALLED_EXE%"
 del "%NEW_EXE%" > nul 2> nul
 del "%~f0"
 """
@@ -209,6 +225,17 @@ def _cleanup_successful_update_backups():
         return
     current_exe = Path(sys.executable).resolve()
     update_dir = Path(tempfile.gettempdir()) / "BuscadorCodigosUpdate"
+    marker_path = update_dir / "successful_update_marker.json"
+    if marker_path.exists():
+        try:
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            old_exe = Path(marker.get("old_exe", "")).resolve()
+            installed_exe = Path(marker.get("installed_exe", "")).resolve()
+            if current_exe == installed_exe and old_exe != current_exe and old_exe.exists():
+                old_exe.unlink()
+            marker_path.unlink()
+        except Exception:
+            pass
     patterns = [
         f"{current_exe.stem}.backup-*{current_exe.suffix}",
         "BuscadorCodigos*.backup-*.exe",
@@ -1456,7 +1483,7 @@ class SearchView(ttk.Frame):
         ranges_index: Optional[dict] = None,
     ):
         super().__init__(master)
-        self.master.title("Buscador de Códigos — MERCADO HOUSE (v97)")
+        self.master.title("Buscador de Códigos — MERCADO HOUSE (v98)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
         self.prefs = load_prefs()
@@ -2804,7 +2831,7 @@ def clean_price(s: str) -> str:
 class TivendoWindow(ttk.Frame):
     def __init__(self, master, listado_path: Optional[Path] = None, go_home_cb=None):
         super().__init__(master)
-        self.master.title("Tivendo - Cambios masivos de precios (v97)")
+        self.master.title("Tivendo - Cambios masivos de precios (v98)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
 
@@ -3416,7 +3443,7 @@ def buscar_siguiente_codigo_disponible(codigo_actual: str, codigos_catalogo_set,
 class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
     def __init__(self, master, catalogo_path: Optional[Path] = None, go_home_cb=None):
         super().__init__(master)
-        self.master.title("Tivendo - Ingreso Masivo de Artículos (v97)")
+        self.master.title("Tivendo - Ingreso Masivo de Artículos (v98)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
 
