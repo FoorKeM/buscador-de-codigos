@@ -48,6 +48,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import ttk, messagebox, filedialog
 
 import pandas as pd
@@ -1452,15 +1453,32 @@ class SearchView(ttk.Frame):
         self.tree.heading("rango1", text="Rango 1")
         self.tree.heading("rango2", text="Rango 2")
         self.tree.heading("__input", text="Codigo buscado")
-        self.tree.column("codigo", width=180, anchor="w")
-        self.tree.column("nombre", width=420, anchor="w")
-        self.tree.column("barcode_interno", width=180, anchor="w")
-        self.tree.column("barcode_externo", width=180, anchor="w")
-        self.tree.column("empresa", width=240, anchor="w")
-        self.tree.column("packs", width=90, anchor="center")
-        self.tree.column("rango1", width=130, anchor="center")
-        self.tree.column("rango2", width=130, anchor="center")
-        self.tree.column("__input", width=200, anchor="w")
+        self._tree_headers = {
+            "codigo": "Código",
+            "nombre": "Nombre",
+            "barcode_interno": "Cód. barra interno",
+            "barcode_externo": "Cód. barra externo",
+            "empresa": "Empresa",
+            "packs": "Packs",
+            "rango1": "Rango 1",
+            "rango2": "Rango 2",
+            "__input": "Codigo buscado",
+        }
+        self._tree_width_limits = {
+            "codigo": (95, 220),
+            "nombre": (240, 760),
+            "barcode_interno": (145, 240),
+            "barcode_externo": (145, 240),
+            "empresa": (120, 360),
+            "packs": (70, 105),
+            "rango1": (90, 170),
+            "rango2": (90, 170),
+            "__input": (120, 240),
+        }
+        for c in cols:
+            min_width, _max_width = self._tree_width_limits[c]
+            anchor = "center" if c in {"packs", "rango1", "rango2"} else "w"
+            self.tree.column(c, width=min_width, minwidth=min_width, anchor=anchor, stretch=False)
         self.tree.tag_configure("dup_input", background="#FFF3CD")
 
         vsb2 = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
@@ -1656,6 +1674,31 @@ class SearchView(ttk.Frame):
             return {}
         return self.ranges_index.get(_norm_pack_code(codigo), {})
 
+    def _autosize_result_columns(self):
+        """Ajusta las columnas al texto visible, con topes para mantener la tabla usable."""
+        try:
+            body_font = tkfont.nametofont("TkDefaultFont")
+            heading_font = tkfont.nametofont("TkHeadingFont")
+        except Exception:
+            body_font = heading_font = None
+
+        def measure(font, text):
+            text = str(text or "")
+            if font is None:
+                return len(text) * 7
+            return font.measure(text)
+
+        children = self.tree.get_children()
+        for col in self.tree["columns"]:
+            min_width, max_width = self._tree_width_limits.get(col, (90, 260))
+            best = measure(heading_font, self._tree_headers.get(col, col)) + 34
+            for row_id in children:
+                best = max(best, measure(body_font, self.tree.set(row_id, col)) + 28)
+                if best >= max_width:
+                    break
+            width = max(min_width, min(best, max_width))
+            self.tree.column(col, width=width, minwidth=min_width)
+
     def populate(self, df, emp_id, not_found_count=0):
         """Rellena el Treeview con los resultados de búsqueda y actualiza la barra de estado."""
         for x in self.tree.get_children(): self.tree.delete(x)
@@ -1688,6 +1731,8 @@ class SearchView(ttk.Frame):
             rango2 = range_rec.get("rango2", "")
             tags = ("dup_input",) if inp.strip() in dup_inputs else ()
             ins("", "end", values=(cod, nom, bi, be, emp_txt, pack_txt, rango1, rango2, inp), tags=tags)
+
+        self._autosize_result_columns()
 
         extra = ""
         if not_found_count: extra += f" | No encontrados: {not_found_count}"
