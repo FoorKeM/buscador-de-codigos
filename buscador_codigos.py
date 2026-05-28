@@ -1499,6 +1499,7 @@ class SearchView(ttk.Frame):
         self.menu.add_command(label="Eliminar fila(s) seleccionada(s)", command=self.remove_selected_rows)
         self.tree.bind("<Button-3>", self.show_context_menu)
         self.tree.bind("<Button-2>", self.show_context_menu)
+        self.tree.bind("<Button-1>", self.clear_result_selection_on_blank_click, add="+")
 
         self.query_menu = tk.Menu(self, tearoff=0)
         self.query_menu.add_command(label="Pegar", command=lambda: self.txt_query.event_generate("<<Paste>>"))
@@ -1611,6 +1612,12 @@ class SearchView(ttk.Frame):
                 self.menu.tk_popup(event.x_root, event.y_root)
         finally:
             self.menu.grab_release()
+
+    def clear_result_selection_on_blank_click(self, event):
+        if self.tree.identify_row(event.y):
+            return
+        self.tree.selection_remove(*self.tree.selection())
+        self.tree.focus("")
 
     def _query_has_selection_at(self, index: str) -> bool:
         ranges = self.txt_query.tag_ranges("sel")
