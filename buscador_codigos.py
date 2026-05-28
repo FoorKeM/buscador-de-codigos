@@ -2,7 +2,9 @@
 # -*- coding: utf-8 -*-
 
 """
-Buscador + Convertidor con gestión de Proveedores integrada (v95)
+Buscador + Convertidor con gestión de Proveedores integrada (v96)
+- v96: limpia backups antiguos tras una actualización exitosa.
+
 - v95: actualizador protegido contra descargas incompletas.
     * Valida tamaño y cabecera del ejecutable antes de reemplazar.
     * Conserva backup del ejecutable anterior durante la actualización.
@@ -74,7 +76,7 @@ _RE_NON_ALNUM = re.compile(r"[^A-Z0-9]")    # elimina no-alfanuméricos (normali
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
 TMP_DIR      = Path(tempfile.gettempdir())  # directorio temporal del sistema
-APP_VERSION  = "v95"
+APP_VERSION  = "v96"
 GITHUB_REPO  = "FoorKeM/buscador-de-codigos"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
@@ -191,10 +193,39 @@ if errorlevel 1 (
   goto retry
 )
 start "" "%OLD_EXE%"
+del "%NEW_EXE%" > nul 2> nul
 del "%~f0"
 """
     script_path.write_text(script, encoding="utf-8")
     return script_path
+
+
+def _cleanup_successful_update_backups():
+    if not _is_frozen_app():
+        return
+    current_exe = Path(sys.executable).resolve()
+    update_dir = Path(tempfile.gettempdir()) / "BuscadorCodigosUpdate"
+    patterns = [
+        f"{current_exe.stem}.backup-*{current_exe.suffix}",
+        "BuscadorCodigos*.backup-*.exe",
+    ]
+    for pattern in patterns:
+        for path in current_exe.parent.glob(pattern):
+            try:
+                path.unlink()
+            except Exception:
+                pass
+    if update_dir.exists():
+        for path in update_dir.glob("*.download"):
+            try:
+                path.unlink()
+            except Exception:
+                pass
+        for path in update_dir.glob("validated-test-*.exe"):
+            try:
+                path.unlink()
+            except Exception:
+                pass
 
 # =====================================================
 #  Semilla de proveedores (incluida en el programa)
@@ -1420,7 +1451,7 @@ class SearchView(ttk.Frame):
         ranges_index: Optional[dict] = None,
     ):
         super().__init__(master)
-        self.master.title("Buscador de Códigos — MERCADO HOUSE (v95)")
+        self.master.title("Buscador de Códigos — MERCADO HOUSE (v96)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
         self.prefs = load_prefs()
@@ -2430,7 +2461,8 @@ class RootApp(tk.Tk):
 
         # La selección del LISTADO DE ARTÍCULOS ahora se hace desde el menú principal
         self._show_start()
-        self.after(1500, self._start_update_check)
+        self.after(1000, _cleanup_successful_update_backups)
+        self.after(2000, self._start_update_check)
 
     def _on_close(self):
         try:
@@ -2767,7 +2799,7 @@ def clean_price(s: str) -> str:
 class TivendoWindow(ttk.Frame):
     def __init__(self, master, listado_path: Optional[Path] = None, go_home_cb=None):
         super().__init__(master)
-        self.master.title("Tivendo - Cambios masivos de precios (v95)")
+        self.master.title("Tivendo - Cambios masivos de precios (v96)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
 
@@ -3379,7 +3411,7 @@ def buscar_siguiente_codigo_disponible(codigo_actual: str, codigos_catalogo_set,
 class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
     def __init__(self, master, catalogo_path: Optional[Path] = None, go_home_cb=None):
         super().__init__(master)
-        self.master.title("Tivendo - Ingreso Masivo de Artículos (v95)")
+        self.master.title("Tivendo - Ingreso Masivo de Artículos (v96)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
 
