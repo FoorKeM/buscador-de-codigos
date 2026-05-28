@@ -1495,7 +1495,6 @@ class SearchView(ttk.Frame):
         self._context_column = None
         self.menu = tk.Menu(self, tearoff=0)
         self.menu.add_command(label="Copiar columna seleccionada", command=self.copy_selected_context_column)
-        self.menu.add_command(label="Copiar fila(s) seleccionada(s)", command=self.copy_selected_rows)
         self.menu.add_separator()
         self.menu.add_command(label="Eliminar fila(s) seleccionada(s)", command=self.remove_selected_rows)
         self.tree.bind("<Button-3>", self.show_context_menu)
