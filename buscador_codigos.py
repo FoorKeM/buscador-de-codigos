@@ -1492,7 +1492,9 @@ class SearchView(ttk.Frame):
         lbl_status.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=5)
         lbl_status.bind("<Button-1>", lambda e: self.on_change_db())  # click para cambiar BD
 
+        self._context_column = None
         self.menu = tk.Menu(self, tearoff=0)
+        self.menu.add_command(label="Copiar columna seleccionada", command=self.copy_selected_context_column)
         self.menu.add_command(label="Copiar fila(s) seleccionada(s)", command=self.copy_selected_rows)
         self.menu.add_separator()
         self.menu.add_command(label="Eliminar fila(s) seleccionada(s)", command=self.remove_selected_rows)
@@ -1500,9 +1502,7 @@ class SearchView(ttk.Frame):
         self.tree.bind("<Button-2>", self.show_context_menu)
 
         self.query_menu = tk.Menu(self, tearoff=0)
-        self.query_menu.add_command(label="Copiar código seleccionado", command=self.copy_selected_query_code)
         self.query_menu.add_command(label="Pegar", command=lambda: self.txt_query.event_generate("<<Paste>>"))
-        self.query_menu.add_separator()
         self.query_menu.add_command(label="Eliminar código seleccionado", command=self.delete_selected_query_code)
         self.query_menu.add_command(label="Limpiar códigos", command=lambda: self.txt_query.delete("1.0", "end"))
 
@@ -1591,11 +1591,24 @@ class SearchView(ttk.Frame):
         """Muestra el menú contextual al hacer click derecho en la tabla."""
         try:
             iid = self.tree.identify_row(event.y)
+            col_id = self.tree.identify_column(event.x)
+            columns = list(self.tree["columns"])
+            self._context_column = None
+            if col_id.startswith("#"):
+                try:
+                    idx = int(col_id[1:]) - 1
+                    if 0 <= idx < len(columns):
+                        self._context_column = columns[idx]
+                except ValueError:
+                    self._context_column = None
+
             if iid:
                 self.tree.focus(iid)
                 if iid not in self.tree.selection():
                     self.tree.selection_set(iid)
             if self.tree.selection():
+                label = self._tree_headers.get(self._context_column, "columna")
+                self.menu.entryconfig(0, label=f"Copiar {label} seleccionado(s)")
                 self.menu.tk_popup(event.x_root, event.y_root)
         finally:
             self.menu.grab_release()
@@ -1666,19 +1679,24 @@ class SearchView(ttk.Frame):
             self.query_menu.grab_release()
         return "break"
 
-    def copy_selected_query_code(self):
-        try:
-            text = self.txt_query.get("sel.first", "sel.last")
-        except tk.TclError:
-            return
-        self._copy_to_clipboard(text, "Código seleccionado copiado al portapapeles.")
-
     def delete_selected_query_code(self):
         try:
             self.txt_query.delete("sel.first", "sel.last")
             self.txt_query.tag_remove("sel", "1.0", "end")
         except tk.TclError:
             return
+
+    def copy_selected_context_column(self):
+        sels = self.tree.selection()
+        col = self._context_column
+        if not sels or not col:
+            return
+        lines = [str(self.tree.set(iid, col)) for iid in sels]
+        label = self._tree_headers.get(col, col)
+        self._copy_to_clipboard(
+            JOIN_SEP.join(lines),
+            f"Copiados {len(lines)} valor(es) de {label} al portapapeles.",
+        )
 
     def copy_selected_rows(self):
         sels = self.tree.selection()
