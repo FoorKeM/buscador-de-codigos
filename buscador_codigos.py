@@ -2600,18 +2600,10 @@ class RootApp(tk.Tk):
 
                 def finish():
                     if not latest or not latest.get("url"):
-                        messagebox.showinfo(
-                            "Actualización",
-                            "No se pudo encontrar un ejecutable publicado en la última versión.",
-                        )
                         return
 
                     latest_tag = latest.get("tag", "")
                     if _version_tuple(latest_tag) <= _version_tuple(APP_VERSION):
-                        messagebox.showinfo(
-                            "Actualización",
-                            f"Ya estás usando la versión más reciente: {APP_VERSION}.",
-                        )
                         return
 
                     if not _is_frozen_app():
