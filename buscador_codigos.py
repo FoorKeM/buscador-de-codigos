@@ -2594,29 +2594,11 @@ class RootApp(tk.Tk):
         threading.Thread(target=worker, daemon=True).start()
 
     def _manual_update_check(self):
-        progress = tk.Toplevel(self)
-        progress.title("Revisando actualización")
-        progress.resizable(False, False)
-        progress.transient(self)
-        progress.grab_set()
-        frm = ttk.Frame(progress, padding=16)
-        frm.pack(fill="both", expand=True)
-        ttk.Label(frm, text="Consultando GitHub Releases...").pack(anchor="w")
-        pb = ttk.Progressbar(frm, mode="indeterminate", length=300)
-        pb.pack(fill="x", pady=(10, 0))
-        pb.start(10)
-
         def worker():
             try:
                 latest = _get_latest_release_info()
 
                 def finish():
-                    try:
-                        pb.stop()
-                        progress.destroy()
-                    except Exception:
-                        pass
-
                     if not latest or not latest.get("url"):
                         messagebox.showinfo(
                             "Actualización",
@@ -2645,11 +2627,6 @@ class RootApp(tk.Tk):
                 self.after(0, finish)
             except Exception as e:
                 def fail():
-                    try:
-                        pb.stop()
-                        progress.destroy()
-                    except Exception:
-                        pass
                     messagebox.showerror(
                         "Error al revisar actualización",
                         f"No se pudo revisar si hay una nueva versión.\n\nDetalle: {e}",
