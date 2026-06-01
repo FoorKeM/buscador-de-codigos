@@ -2,7 +2,14 @@
 # -*- coding: utf-8 -*-
 
 """
-Buscador + Convertidor con gestión de Proveedores integrada (v99)
+Buscador + Convertidor con gestión de Proveedores integrada (v100)
+- v100: búsqueda por código Tivendo.
+    * Nueva casilla "Buscar por código Tivendo" en el buscador.
+    * Permite buscar por Identificador/columna A del LISTADO DE ARTÍCULOS
+      (ej.: A001650, A001651).
+    * Mantiene la salida normal con códigos, barras, empresa, packs y rangos.
+    * No guarda preferencia: la casilla inicia desmarcada.
+
 - v99: actualizador sin reinicio automático para evitar fallos de extracción PyInstaller.
 
 - v98: instala la nueva versión como archivo aparte y borra la anterior solo al iniciar bien.
@@ -82,7 +89,7 @@ _RE_NON_ALNUM = re.compile(r"[^A-Z0-9]")    # elimina no-alfanuméricos (normali
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
 TMP_DIR      = Path(tempfile.gettempdir())  # directorio temporal del sistema
-APP_VERSION  = "v99"
+APP_VERSION  = "v100"
 GITHUB_REPO  = "FoorKeM/buscador-de-codigos"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
@@ -1502,7 +1509,7 @@ class SearchView(ttk.Frame):
         ranges_index: Optional[dict] = None,
     ):
         super().__init__(master)
-        self.master.title("Buscador de Códigos — MERCADO HOUSE (v99)")
+        self.master.title("Buscador de Códigos — MERCADO HOUSE (v100)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
         self.prefs = load_prefs()
@@ -2852,7 +2859,7 @@ def clean_price(s: str) -> str:
 class TivendoWindow(ttk.Frame):
     def __init__(self, master, listado_path: Optional[Path] = None, go_home_cb=None):
         super().__init__(master)
-        self.master.title("Tivendo - Cambios masivos de precios (v99)")
+        self.master.title("Tivendo - Cambios masivos de precios (v100)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
 
@@ -3464,7 +3471,7 @@ def buscar_siguiente_codigo_disponible(codigo_actual: str, codigos_catalogo_set,
 class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
     def __init__(self, master, catalogo_path: Optional[Path] = None, go_home_cb=None):
         super().__init__(master)
-        self.master.title("Tivendo - Ingreso Masivo de Artículos (v99)")
+        self.master.title("Tivendo - Ingreso Masivo de Artículos (v100)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
 
