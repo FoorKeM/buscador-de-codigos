@@ -2,7 +2,12 @@
 # -*- coding: utf-8 -*-
 
 """
-Buscador + Convertidor con gestión de Proveedores integrada (v101)
+Buscador + Convertidor con gestión de Proveedores integrada (v102)
+- v102: revisión automática cada 1 hora y apertura automática post-actualización.
+    * Revisa actualizaciones cada 1 hora mientras el programa está abierto.
+    * Al actualizar, cierra la versión actual y abre automáticamente la nueva.
+    * Mantiene el flujo de instalación como ejecutable separado para evitar sobrescrituras.
+
 - v101: version visible y revisión manual de actualización.
     * Muestra "Versión actual" abajo a la derecha en el menú principal.
     * Agrega botón "Revisar actualización" para consultar GitHub Releases.
@@ -64,6 +69,7 @@ import sys
 import json
 import re
 import os
+import subprocess
 import shutil
 import threading
 import tempfile
@@ -94,9 +100,10 @@ _RE_NON_ALNUM = re.compile(r"[^A-Z0-9]")    # elimina no-alfanuméricos (normali
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
 TMP_DIR      = Path(tempfile.gettempdir())  # directorio temporal del sistema
-APP_VERSION  = "v101"
+APP_VERSION  = "v102"
 GITHUB_REPO  = "FoorKeM/buscador-de-codigos"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000
 
 # Cache simple para evitar recargar la BASE DE DATOS desde disco en la misma sesión
 _LOAD_DATA_CACHE = {
@@ -222,6 +229,21 @@ def _install_downloaded_update(current_exe: Path, new_exe: Path, version_tag: st
     return installed_exe
 
 
+def _write_launch_new_version_script(installed_exe: Path) -> Path:
+    update_dir = Path(tempfile.gettempdir()) / "BuscadorCodigosUpdate"
+    update_dir.mkdir(parents=True, exist_ok=True)
+    script_path = update_dir / "abrir_nueva_version.bat"
+    script = f"""@echo off
+setlocal
+set "NEW_EXE={installed_exe}"
+timeout /t 8 /nobreak > nul
+start "" "%NEW_EXE%"
+del "%~f0"
+"""
+    script_path.write_text(script, encoding="utf-8")
+    return script_path
+
+
 def _cleanup_successful_update_backups():
     if not _is_frozen_app():
         return
@@ -249,7 +271,7 @@ def _cleanup_successful_update_backups():
             except Exception:
                 pass
     if update_dir.exists():
-        for pattern in ("*.download", "*.backup-*.exe", "validated-test-*.exe"):
+        for pattern in ("*.download", "*.backup-*.exe", "validated-test-*.exe", "abrir_nueva_version.bat"):
             for path in update_dir.glob(pattern):
                 try:
                     path.unlink()
@@ -1523,7 +1545,7 @@ class SearchView(ttk.Frame):
         ranges_index: Optional[dict] = None,
     ):
         super().__init__(master)
-        self.master.title("Buscador de Códigos — MERCADO HOUSE (v101)")
+        self.master.title("Buscador de Códigos — MERCADO HOUSE (v102)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
         self.prefs = load_prefs()
@@ -2563,6 +2585,11 @@ class RootApp(tk.Tk):
             except Exception:
                 # La app no debe molestar si no hay internet o GitHub no responde.
                 return
+            finally:
+                try:
+                    self.after(UPDATE_CHECK_INTERVAL_MS, self._start_update_check)
+                except Exception:
+                    pass
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -2666,13 +2693,22 @@ class RootApp(tk.Tk):
                         progress.destroy()
                     except Exception:
                         pass
+                    launcher = _write_launch_new_version_script(installed_exe)
                     messagebox.showinfo(
                         "Actualización lista",
                         "La nueva versión ya quedó descargada.\n\n"
                         f"Archivo nuevo:\n{installed_exe}\n\n"
-                        "Se cerrará esta versión. Abre el archivo nuevo para continuar.",
+                        "Se cerrará esta versión y se abrirá automáticamente la nueva.\n"
+                        "Si la nueva versión abre correctamente, la anterior se borrará sola.",
                     )
-                    self.destroy()
+                    try:
+                        subprocess.Popen(
+                            ["cmd", "/c", str(launcher)],
+                            close_fds=True,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                        )
+                    finally:
+                        self.destroy()
 
                 self.after(0, finish)
             except Exception as e:
@@ -2939,7 +2975,7 @@ def clean_price(s: str) -> str:
 class TivendoWindow(ttk.Frame):
     def __init__(self, master, listado_path: Optional[Path] = None, go_home_cb=None):
         super().__init__(master)
-        self.master.title("Tivendo - Cambios masivos de precios (v101)")
+        self.master.title("Tivendo - Cambios masivos de precios (v102)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
 
@@ -3551,7 +3587,7 @@ def buscar_siguiente_codigo_disponible(codigo_actual: str, codigos_catalogo_set,
 class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
     def __init__(self, master, catalogo_path: Optional[Path] = None, go_home_cb=None):
         super().__init__(master)
-        self.master.title("Tivendo - Ingreso Masivo de Artículos (v101)")
+        self.master.title("Tivendo - Ingreso Masivo de Artículos (v102)")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
 
