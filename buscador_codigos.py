@@ -622,6 +622,28 @@ def _make_nf_row(code: str, pos: int) -> pd.DataFrame:
         "empresa_id": "", "__input": code, "__pos": pos, "__rank": 0
     }])
 
+def _ensure_search_helper_columns(df: pd.DataFrame) -> pd.DataFrame:
+    for c in ["identificador", "codigo", "nombre", "barcode_interno", "barcode_externo", "empresa_id"]:
+        if c not in df.columns:
+            df[c] = ""
+        df[c] = df[c].fillna("").astype(str)
+
+    if "_codigo_lc" not in df.columns:
+        df["_codigo_lc"] = df["codigo"].str.lower().str.strip()
+    if "_identificador_lc" not in df.columns:
+        df["_identificador_lc"] = df["identificador"].str.lower().str.strip()
+    if "_identificador_ws" not in df.columns:
+        df["_identificador_ws"] = df["identificador"].astype(str).str.strip().apply(lambda s: _ws_re.sub(" ", s))
+    if "_codigo_ws" not in df.columns:
+        df["_codigo_ws"] = df["codigo"].astype(str).str.strip().apply(lambda s: _ws_re.sub(" ", s))
+    if "_nombre_lc" not in df.columns:
+        df["_nombre_lc"] = df["nombre"].map(_norm_lc)
+    if "_codigo_tokens" not in df.columns:
+        df["_codigo_tokens"] = df["codigo"].apply(split_codes_by_slash)
+    if "_codigo_tokens_norm" not in df.columns:
+        df["_codigo_tokens_norm"] = df["_codigo_tokens"].apply(to_normalized_tokens)
+    return df
+
 def _clean_emp(empresas: Dict[int, str]) -> Dict[int, str]:
     """Filtra y convierte el dict de empresas a {int: str} limpio."""
     return {int(k): str(v) for k, v in empresas.items() if str(k).lstrip("-").isdigit()}
@@ -655,6 +677,7 @@ def load_data(selected_path: Optional[Path]):
             if meta.get("src_key") == src_key and meta.get("src_mtime") == src_mtime:
                 # Coincide el origen: usamos la base cacheada en disco
                 df = pd.read_pickle(CACHE_DB_PATH)
+                df = _ensure_search_helper_columns(df)
 
                 # Construir índice invertido (rápido, siempre desde el df)
                 tok_idx = _build_search_index(df)
@@ -678,6 +701,7 @@ def load_data(selected_path: Optional[Path]):
     cache_path = _LOAD_DATA_CACHE.get("path")
 
     if cache_df is not None and cache_path == selected_path:
+        cache_df = _ensure_search_helper_columns(cache_df)
         return cache_df, _clean_emp(empresas)  # consistente con retorno de cache disco
 
     used_path: Optional[Path] = selected_path
@@ -735,19 +759,8 @@ def load_data(selected_path: Optional[Path]):
         else:
             df["empresa_id"] = ""  # columna no presente; se inicializa vacía
 
-    for c in ["identificador", "codigo", "nombre", "barcode_interno", "barcode_externo", "empresa_id"]:
-        if c not in df.columns:
-            df[c] = ""
-        df[c] = df[c].fillna("").astype(str)
-
-    df["_codigo_lc"] = df["codigo"].str.lower().str.strip()
-    # Código normalizado sólo en espacios (no se eliminan): colapsa espacios múltiples a uno
-    df["_codigo_ws"] = df["codigo"].astype(str).str.strip().apply(lambda s: _ws_re.sub(" ", s))
-    df["_nombre_lc"] = df["nombre"].map(_norm_lc)
-    # Tokens multi-código por "/"
     try:
-        df["_codigo_tokens"] = df["codigo"].apply(split_codes_by_slash)
-        df["_codigo_tokens_norm"] = df["_codigo_tokens"].apply(to_normalized_tokens)
+        df = _ensure_search_helper_columns(df)
     except Exception:
         df["_codigo_tokens"] = [[] for _ in range(len(df))]
         df["_codigo_tokens_norm"] = [[] for _ in range(len(df))]
@@ -975,7 +988,7 @@ def _build_search_index(df: pd.DataFrame) -> Dict[str, List[int]]:
 
 
 def _score_results(df: pd.DataFrame, q_raw: str, q_ws: str, q_norm: str,
-                   exact: bool, by_barras: bool,
+                   exact: bool, by_barras: bool, by_tivendo: bool = False,
                    tok_index: Optional[Dict] = None) -> pd.DataFrame:
     """Calcula scores de relevancia por fila y devuelve df filtrado y ordenado.
 
@@ -988,6 +1001,8 @@ def _score_results(df: pd.DataFrame, q_raw: str, q_ws: str, q_norm: str,
          20 — nombre contiene el término (no-exacto)
          70 — barcode exacto  (modo exacto)
          10 — barcode contiene (modo no-exacto)
+         95 — identificador Tivendo exacto
+         55 — identificador Tivendo empieza con/contiene (modo no-exacto)
 
     Returns:
         DataFrame con columna __score, ordenado score desc. Vacío si sin resultados.
@@ -998,6 +1013,10 @@ def _score_results(df: pd.DataFrame, q_raw: str, q_ws: str, q_norm: str,
     scores  = np.zeros(n, dtype=np.int32)
 
     if exact:
+        if by_tivendo:
+            im = (df["_identificador_ws"].str.lower() == q_ws_lc).values
+            scores[im] = 95
+
         m = (df["_codigo_ws"].str.lower() == q_ws_lc).values
         scores[m] = 100
 
@@ -1014,6 +1033,16 @@ def _score_results(df: pd.DataFrame, q_raw: str, q_ws: str, q_norm: str,
                   (df["barcode_externo"].str.strip() == q_ws)).values
             scores[bm & (scores == 0)] = 70
     else:
+        if by_tivendo:
+            im_exact = (df["_identificador_ws"].str.lower() == q_ws_lc).values
+            scores[im_exact] = 95
+
+            im_starts = df["_identificador_lc"].str.startswith(q_ws_lc, na=False).values
+            scores[im_starts & (scores < 55)] = 55
+
+            im_contains = df["_identificador_lc"].str.contains(re.escape(q_ws_lc), na=False).values
+            scores[im_contains & (scores < 45)] = 45
+
         m_exact = (df["_codigo_ws"].str.lower() == q_ws_lc).values
         scores[m_exact] = 100
 
@@ -1518,8 +1547,10 @@ class SearchView(ttk.Frame):
         opts = ttk.Frame(content); opts.grid(row=2, column=0, sticky="w", pady=(6,0))
         self.exact = tk.BooleanVar(value=bool(self.prefs.get("exact", True)))
         self.by_barras = tk.BooleanVar(value=bool(self.prefs.get("by_barras", False)))
+        self.by_tivendo = tk.BooleanVar(value=False)
         ttk.Checkbutton(opts, text="Coincidencia exacta (código)", variable=self.exact).pack(side="left")
         ttk.Checkbutton(opts, text="Buscar por códigos de barra", variable=self.by_barras).pack(side="left", padx=(12,0))
+        ttk.Checkbutton(opts, text="Buscar por código Tivendo", variable=self.by_tivendo).pack(side="left", padx=(12,0))
 
         row3 = ttk.Frame(content); row3.grid(row=3, column=0, sticky="w", pady=(8,0))
         ttk.Label(row3, text="Empresa:").pack(side="left")
@@ -1970,13 +2001,14 @@ class SearchView(ttk.Frame):
 
         exact     = self.exact.get()
         by_barras = self.by_barras.get()
+        by_tivendo = self.by_tivendo.get()
         tok_index = _LOAD_DATA_CACHE.get("index")
 
         if len(codes) == 1:
             q      = codes[0]
             q_ws   = _ws_re.sub(" ", q).strip()
             q_norm = normalize_code_token(q_ws)
-            out    = _score_results(df, q, q_ws, q_norm, exact, by_barras, tok_index)
+            out    = _score_results(df, q, q_ws, q_norm, exact, by_barras, by_tivendo, tok_index)
             if out.empty:
                 if not by_barras and _looks_like_barcode(q):
                     hint = "  Parece codigo de barra: marca 'Buscar por codigos de barra' y vuelve a buscar."
@@ -2001,7 +2033,7 @@ class SearchView(ttk.Frame):
             if not code_ws:
                 continue
             code_norm = normalize_code_token(code_ws)
-            sub = _score_results(df, code, code_ws, code_norm, exact, by_barras, tok_index)
+            sub = _score_results(df, code, code_ws, code_norm, exact, by_barras, by_tivendo, tok_index)
             if sub.empty:
                 nf_row = _make_nf_row(code, i)
                 nf_row["__pos"] = i
