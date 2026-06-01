@@ -1307,6 +1307,7 @@ class StartView(ttk.Frame):
         on_load_listado,
         on_load_packs,
         on_load_ranges,
+        on_check_update,
         listado_cargado: bool,
         packs_cargado: bool,
         ranges_cargado: bool,
@@ -1363,6 +1364,14 @@ class StartView(ttk.Frame):
         self.lbl_estado_packs.pack(pady=(2, 0), anchor="w")
         self.lbl_estado_rangos = ttk.Label(self, text="", foreground="#555")
         self.lbl_estado_rangos.pack(pady=(2, 0), anchor="w")
+
+        footer = ttk.Frame(self)
+        footer.pack(side="bottom", fill="x")
+        update_box = ttk.Frame(footer)
+        update_box.pack(side="right", anchor="e")
+        ttk.Label(update_box, text=f"Versión actual: {APP_VERSION}", foreground="#555").pack(side="left", padx=(0, 8))
+        ttk.Button(update_box, text="Revisar actualización", command=on_check_update).pack(side="left")
+
         self.set_listado_cargado(listado_cargado)
         self.set_packs_cargado(packs_cargado)
         self.set_ranges_cargado(ranges_cargado)
@@ -2552,6 +2561,71 @@ class RootApp(tk.Tk):
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _manual_update_check(self):
+        progress = tk.Toplevel(self)
+        progress.title("Revisando actualización")
+        progress.resizable(False, False)
+        progress.transient(self)
+        progress.grab_set()
+        frm = ttk.Frame(progress, padding=16)
+        frm.pack(fill="both", expand=True)
+        ttk.Label(frm, text="Consultando GitHub Releases...").pack(anchor="w")
+        pb = ttk.Progressbar(frm, mode="indeterminate", length=300)
+        pb.pack(fill="x", pady=(10, 0))
+        pb.start(10)
+
+        def worker():
+            try:
+                latest = _get_latest_release_info()
+
+                def finish():
+                    try:
+                        pb.stop()
+                        progress.destroy()
+                    except Exception:
+                        pass
+
+                    if not latest or not latest.get("url"):
+                        messagebox.showinfo(
+                            "Actualización",
+                            "No se pudo encontrar un ejecutable publicado en la última versión.",
+                        )
+                        return
+
+                    latest_tag = latest.get("tag", "")
+                    if _version_tuple(latest_tag) <= _version_tuple(APP_VERSION):
+                        messagebox.showinfo(
+                            "Actualización",
+                            f"Ya estás usando la versión más reciente: {APP_VERSION}.",
+                        )
+                        return
+
+                    if not _is_frozen_app():
+                        messagebox.showinfo(
+                            "Actualización disponible",
+                            f"Existe una nueva versión disponible: {latest_tag}.\n\n"
+                            "El instalador automático solo funciona desde el ejecutable portable.",
+                        )
+                        return
+
+                    self._prompt_update(latest)
+
+                self.after(0, finish)
+            except Exception as e:
+                def fail():
+                    try:
+                        pb.stop()
+                        progress.destroy()
+                    except Exception:
+                        pass
+                    messagebox.showerror(
+                        "Error al revisar actualización",
+                        f"No se pudo revisar si hay una nueva versión.\n\nDetalle: {e}",
+                    )
+                self.after(0, fail)
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _prompt_update(self, latest: dict):
         tag = latest.get("tag", "")
         if not messagebox.askyesno(
@@ -2734,6 +2808,7 @@ class RootApp(tk.Tk):
             on_load_listado=self._choose_listado_inicial,
             on_load_packs=self._choose_packs_inicial,
             on_load_ranges=self._choose_ranges_inicial,
+            on_check_update=self._manual_update_check,
             listado_cargado=self.listado_path is not None,
             packs_cargado=bool(self.packs_index),
             ranges_cargado=bool(self.ranges_index),
