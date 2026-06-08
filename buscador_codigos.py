@@ -74,6 +74,7 @@ import shutil
 import threading
 import tempfile
 import atexit
+import asyncio
 import unicodedata
 import difflib
 import urllib.request
@@ -100,7 +101,7 @@ _RE_NON_ALNUM = re.compile(r"[^A-Z0-9]")    # elimina no-alfanuméricos (normali
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
 TMP_DIR      = Path(tempfile.gettempdir())  # directorio temporal del sistema
-APP_VERSION  = "v102"
+APP_VERSION  = "v103"
 GITHUB_REPO  = "FoorKeM/buscador-de-codigos"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000
@@ -485,15 +486,21 @@ PREF_PATH = HERE / "buscador_prefs.json"
 # -----------------------------------------------------
 LOCAL_APPDATA = os.getenv("LOCALAPPDATA")
 if LOCAL_APPDATA:
-    CACHE_DIR = Path(LOCAL_APPDATA) / "BuscadorCodigos" / ".cache"
+    APP_DATA_DIR = Path(LOCAL_APPDATA) / "BuscadorCodigos"
+    CACHE_DIR = APP_DATA_DIR / ".cache"
 else:
+    APP_DATA_DIR = HERE
     CACHE_DIR = HERE / ".cache"
 try:
+    APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
 except Exception:
     pass
 CACHE_DB_PATH = CACHE_DIR / "base_codigos_cache.pkl"
 CACHE_DB_META = CACHE_DIR / "base_codigos_cache_meta.json"
+AUTO_DOWNLOAD_DIR = APP_DATA_DIR / "auto_downloads"
+AUTO_CREDENTIALS_PATH = APP_DATA_DIR / "credenciales_auto.json"
+AUTO_DIAG_DIR = APP_DATA_DIR / "diagnosticos_auto"
 
 # Limpieza automática de archivos temporales de BASE DE DATOS al salir
 def _cleanup_tmp_bases():
@@ -526,6 +533,332 @@ def save_prefs(prefs: dict):
             json.dump(prefs, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
+
+def load_auto_credentials() -> dict:
+    try:
+        with open(AUTO_CREDENTIALS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, dict):
+                return {
+                    "usuario": str(data.get("usuario", "")),
+                    "password": str(data.get("password", "")),
+                }
+    except Exception:
+        pass
+    return {"usuario": "", "password": ""}
+
+def save_auto_credentials(usuario: str, password: str):
+    try:
+        AUTO_CREDENTIALS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(AUTO_CREDENTIALS_PATH, "w", encoding="utf-8") as f:
+            json.dump(
+                {"usuario": usuario, "password": password},
+                f,
+                ensure_ascii=False,
+                indent=2,
+            )
+    except Exception:
+        pass
+
+class AutoDownloadError(Exception):
+    pass
+
+def _clean_auto_download_dir() -> int:
+    AUTO_DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    deleted = 0
+    for path in AUTO_DOWNLOAD_DIR.iterdir():
+        if path.is_file():
+            try:
+                path.unlink()
+                deleted += 1
+            except Exception:
+                pass
+    return deleted
+
+def _auto_log_path() -> Path:
+    AUTO_DIAG_DIR.mkdir(parents=True, exist_ok=True)
+    return AUTO_DIAG_DIR / "carga_automatica.log"
+
+def _auto_log(message: str):
+    try:
+        with open(_auto_log_path(), "a", encoding="utf-8") as f:
+            f.write(message + "\n")
+    except Exception:
+        pass
+
+async def _auto_wait_light(page, timeout: int = 15000):
+    try:
+        await page.wait_for_load_state("domcontentloaded", timeout=timeout)
+    except Exception:
+        pass
+
+async def _auto_pause(seconds: float = 0.2):
+    await asyncio.sleep(seconds)
+
+async def _auto_retry(name: str, action, attempts: int = 3, wait: float = 0.8):
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return await action()
+        except Exception as exc:
+            last_error = exc
+            if attempt >= attempts:
+                break
+            _auto_log(f"Reintentando {name} ({attempt + 1}/{attempts})")
+            await asyncio.sleep(wait)
+    raise last_error
+
+async def _auto_launch_browser(playwright, downloads_path: Path):
+    kwargs = {
+        "headless": True,
+        "downloads_path": str(downloads_path),
+    }
+    errors = []
+
+    if not getattr(sys, "frozen", False):
+        try:
+            return await playwright.chromium.launch(**kwargs)
+        except Exception as exc:
+            errors.append(exc)
+
+    for channel in ("msedge", "chrome"):
+        try:
+            return await playwright.chromium.launch(channel=channel, **kwargs)
+        except Exception as exc:
+            errors.append(exc)
+
+    detail = str(errors[-1]) if errors else "sin detalle"
+    raise AutoDownloadError(
+        "No se pudo abrir un navegador compatible para la carga automática. "
+        "Instala Microsoft Edge o Google Chrome.\n\nDetalle: " + detail
+    )
+
+async def _auto_new_page(playwright):
+    browser = await _auto_launch_browser(playwright, AUTO_DOWNLOAD_DIR)
+    context = await browser.new_context(accept_downloads=True, bypass_csp=True)
+    page = await context.new_page()
+    return browser, context, page
+
+async def _auto_click_capture_page(context, page, locator, timeout: int = 3500):
+    try:
+        from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+    except Exception:
+        PlaywrightTimeoutError = TimeoutError
+
+    try:
+        async with context.expect_page(timeout=timeout) as page_info:
+            await _auto_retry("click que abre módulo", locator.click)
+        new_page = await page_info.value
+        await _auto_wait_light(new_page)
+        return new_page
+    except PlaywrightTimeoutError:
+        await _auto_wait_light(page)
+        return page
+
+async def _auto_login_tivendo(page, usuario: str, password: str):
+    _auto_log("Abriendo login Tivendo")
+    await page.goto("https://tivendoapp.defontana.com/login", timeout=30000)
+    try:
+        await page.wait_for_selector("input", state="visible", timeout=15000)
+    except Exception:
+        await _auto_wait_light(page)
+        if "login" not in page.url.lower():
+            return
+        await page.wait_for_selector("input", state="visible", timeout=20000)
+
+    inputs = page.locator("input")
+    await inputs.nth(0).click()
+    await inputs.nth(0).fill("")
+    await inputs.nth(0).press_sequentially(usuario, delay=20)
+    await _auto_pause()
+    await inputs.nth(1).click()
+    await inputs.nth(1).fill("")
+    await inputs.nth(1).press_sequentially(password, delay=20)
+    await _auto_pause()
+
+    login_buttons = ("Iniciar Sesión", "Iniciar Sesion", "Ingresar", "Entrar")
+    last_error = None
+    for button in login_buttons:
+        try:
+            await page.get_by_role("button", name=button).click(timeout=4000)
+            break
+        except Exception as exc:
+            last_error = exc
+    else:
+        raise last_error
+
+    try:
+        await page.wait_for_url(lambda url: "login" not in url.lower(), timeout=25000)
+    except Exception:
+        pass
+    await _auto_wait_light(page)
+    if "login" in page.url.lower():
+        raise AutoDownloadError("No se pudo iniciar sesión en Tivendo. Revisa usuario y contraseña.")
+
+async def _auto_read_company(page) -> str:
+    for text in ("MERCADO HOUSE SPA", "MERCADO HOUSE", "NO USAR"):
+        try:
+            loc = page.get_by_text(text, exact=False).first
+            await loc.wait_for(state="visible", timeout=1200)
+            value = (await loc.inner_text()).strip().upper()
+            if value:
+                return value
+        except Exception:
+            continue
+
+    selectors = [
+        "header p:has-text('MERCADO HOUSE')",
+        "header p:has-text('NO USAR')",
+        "header span:has-text('MERCADO HOUSE')",
+        "header span:has-text('NO USAR')",
+        "header div:has-text('MERCADO HOUSE')",
+        "header div:has-text('NO USAR')",
+        "header [class*='company']",
+        "header [class*='empresa']",
+    ]
+    for selector in selectors:
+        try:
+            loc = page.locator(selector).first
+            await loc.wait_for(state="visible", timeout=900)
+            value = (await loc.inner_text()).strip().upper()
+            if "MERCADO HOUSE" in value or "NO USAR" in value:
+                return value
+        except Exception:
+            continue
+    return ""
+
+async def _auto_ensure_mercado_house(page, usuario: str, password: str):
+    company = await _auto_read_company(page)
+    if not company:
+        _auto_log("No se pudo leer empresa activa; se continúa de todas formas")
+        return
+    if "MERCADO HOUSE" in company:
+        return
+
+    clicked = False
+    for selector in (
+        "header p:has-text('NO USAR')",
+        "header span:has-text('NO USAR')",
+        "header div:has-text('NO USAR')",
+        "text=NO USAR",
+    ):
+        try:
+            loc = page.locator(selector).first
+            if await loc.count() > 0:
+                await loc.click()
+                clicked = True
+                break
+        except Exception:
+            continue
+    if not clicked:
+        raise AutoDownloadError("No se pudo abrir el selector de empresa en Defontana.")
+
+    await _auto_pause(0.3)
+    try:
+        await page.wait_for_selector("text=MERCADO HOUSE SPA", state="visible", timeout=10000)
+    except Exception:
+        await page.wait_for_selector("text=MERCADO HOUSE", state="visible", timeout=10000)
+
+    for action in (
+        lambda: page.get_by_text("MERCADO HOUSE SPA", exact=True).click(),
+        lambda: page.locator("text=MERCADO HOUSE SPA").first.click(),
+        lambda: page.locator("text=MERCADO HOUSE").last.click(),
+    ):
+        try:
+            await action()
+            break
+        except Exception:
+            continue
+    else:
+        raise AutoDownloadError("No se pudo seleccionar MERCADO HOUSE SPA.")
+
+    await _auto_wait_light(page, timeout=20000)
+    await _auto_pause(0.5)
+    if "login" in page.url.lower():
+        await _auto_login_tivendo(page, usuario, password)
+
+    new_company = await _auto_read_company(page)
+    if "MERCADO HOUSE" not in new_company:
+        raise AutoDownloadError(f"No se pudo confirmar MERCADO HOUSE. Empresa actual: {new_company or 'desconocida'}")
+
+async def _auto_open_pos(context, page):
+    pos_page = await _auto_click_capture_page(
+        context,
+        page,
+        page.get_by_text("Punto de Ventas"),
+    )
+    await pos_page.locator("text=Artículos").first.wait_for(state="visible", timeout=25000)
+    return pos_page
+
+async def _auto_download_from_pos(pos_page, section_name: str, fallback_name: str) -> Path:
+    await pos_page.locator("text=Artículos").first.click()
+    await pos_page.get_by_role("link", name=section_name, exact=True).wait_for(state="visible", timeout=15000)
+    await pos_page.get_by_role("link", name=section_name, exact=True).click()
+    await pos_page.get_by_role("button", name="Exportar").wait_for(state="visible", timeout=30000)
+
+    async with pos_page.expect_download(timeout=300000) as download_info:
+        await pos_page.get_by_role("button", name="Exportar").click()
+    download = await download_info.value
+    file_name = download.suggested_filename or fallback_name
+    target = AUTO_DOWNLOAD_DIR / file_name
+    await download.save_as(str(target))
+    if not target.exists():
+        raise AutoDownloadError(f"No se encontró el archivo descargado: {target}")
+    return target
+
+async def auto_download_articulos_y_packs(usuario: str, password: str, progress_cb=None) -> dict:
+    def progress(text: str):
+        _auto_log(text)
+        if progress_cb:
+            progress_cb(text)
+
+    progress("Limpiando descargas anteriores...")
+    _clean_auto_download_dir()
+
+    try:
+        from playwright.async_api import async_playwright
+    except Exception as exc:
+        raise AutoDownloadError(
+            "Falta instalar Playwright para usar la carga automática.\n"
+            "Instala la dependencia o usa el .exe portable actualizado."
+        ) from exc
+
+    browser = None
+    try:
+        async with async_playwright() as p:
+            progress("Abriendo navegador automático...")
+            browser, context, page = await _auto_new_page(p)
+
+            progress("Iniciando sesión en Tivendo...")
+            await _auto_login_tivendo(page, usuario, password)
+
+            progress("Verificando empresa Mercado House...")
+            await _auto_ensure_mercado_house(page, usuario, password)
+
+            progress("Abriendo Punto de Ventas...")
+            pos_page = await _auto_open_pos(context, page)
+
+            progress("Descargando listado de artículos...")
+            articulos_path = await _auto_download_from_pos(
+                pos_page,
+                "Listado de artículos",
+                "listado_articulos.xlsx",
+            )
+
+            progress("Descargando maestro de packs...")
+            packs_path = await _auto_download_from_pos(pos_page, "Packs", "packs.xlsx")
+
+            return {"articulos": articulos_path, "packs": packs_path}
+    except AutoDownloadError:
+        raise
+    except Exception as exc:
+        raise AutoDownloadError(str(exc)) from exc
+    finally:
+        if browser is not None:
+            try:
+                await browser.close()
+            except Exception:
+                pass
 
 # =====================================================
 #  Proveedores (empresas) — persistencia
@@ -1334,6 +1667,7 @@ class StartView(ttk.Frame):
         on_load_listado,
         on_load_packs,
         on_load_ranges,
+        on_auto_load,
         on_check_update,
         listado_cargado: bool,
         packs_cargado: bool,
@@ -1383,6 +1717,13 @@ class StartView(ttk.Frame):
             command=on_load_ranges,
         )
         self.btn_cargar_rangos.pack(pady=(0, 8))
+
+        self.btn_cargar_auto = ttk.Button(
+            self,
+            text="Cargar automático",
+            command=on_auto_load,
+        )
+        self.btn_cargar_auto.pack(pady=(0, 8))
 
         # Etiqueta de estado + botones (delegado a set_listado_cargado)
         self.lbl_estado = ttk.Label(self, text="", foreground="#555")
@@ -2728,6 +3069,185 @@ class RootApp(tk.Tk):
                 f"Se cargó correctamente el LISTADO DE ARTICULOS.\n\nArchivo:\n{self.listado_path.name}"
             )
 
+    def _ask_auto_credentials(self) -> Optional[tuple]:
+        saved = load_auto_credentials()
+        dialog = tk.Toplevel(self)
+        dialog.title("Carga automática")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        frame = ttk.Frame(dialog, padding=16)
+        frame.pack(fill="both", expand=True)
+
+        ttk.Label(frame, text="Credenciales de Tivendo", font=("TkDefaultFont", 10, "bold")).grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 10)
+        )
+
+        ttk.Label(frame, text="Usuario:").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=4)
+        user_var = tk.StringVar(value=saved.get("usuario", ""))
+        user_entry = ttk.Entry(frame, textvariable=user_var, width=38)
+        user_entry.grid(row=1, column=1, sticky="ew", pady=4)
+
+        ttk.Label(frame, text="Contraseña:").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=4)
+        pass_var = tk.StringVar(value=saved.get("password", ""))
+        pass_entry = ttk.Entry(frame, textvariable=pass_var, width=38, show="*")
+        pass_entry.grid(row=2, column=1, sticky="ew", pady=4)
+
+        note = ttk.Label(
+            frame,
+            text="Se preguntará siempre para que puedas actualizar la contraseña cuando cambie.",
+            foreground="#555",
+            wraplength=360,
+        )
+        note.grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 12))
+
+        result = {"value": None}
+
+        def accept():
+            usuario = user_var.get().strip()
+            password = pass_var.get().strip()
+            if not usuario or not password:
+                messagebox.showwarning("Datos requeridos", "Ingresa usuario y contraseña.", parent=dialog)
+                return
+            result["value"] = (usuario, password)
+            dialog.destroy()
+
+        def cancel():
+            result["value"] = None
+            dialog.destroy()
+
+        buttons = ttk.Frame(frame)
+        buttons.grid(row=4, column=0, columnspan=2, sticky="e")
+        ttk.Button(buttons, text="Cancelar", command=cancel).pack(side="left", padx=(0, 8))
+        ttk.Button(buttons, text="Cargar automático", command=accept).pack(side="left")
+
+        dialog.protocol("WM_DELETE_WINDOW", cancel)
+        dialog.bind("<Return>", lambda _e: accept())
+        dialog.bind("<Escape>", lambda _e: cancel())
+        frame.columnconfigure(1, weight=1)
+
+        try:
+            dialog.update_idletasks()
+            x = self.winfo_rootx() + max(0, (self.winfo_width() - dialog.winfo_width()) // 2)
+            y = self.winfo_rooty() + max(0, (self.winfo_height() - dialog.winfo_height()) // 2)
+            dialog.geometry(f"+{x}+{y}")
+        except Exception:
+            pass
+
+        user_entry.focus_set() if not user_var.get() else pass_entry.focus_set()
+        self.wait_window(dialog)
+        return result["value"]
+
+    def _auto_load_articulos_packs(self):
+        credentials = self._ask_auto_credentials()
+        if not credentials:
+            return
+        usuario, password = credentials
+        save_auto_credentials(usuario, password)
+
+        progress = tk.Toplevel(self)
+        progress.title("Carga automática")
+        progress.transient(self)
+        progress.resizable(False, False)
+        box = ttk.Frame(progress, padding=16)
+        box.pack(fill="both", expand=True)
+        ttk.Label(box, text="Descargando artículos y packs...", font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
+        status_var = tk.StringVar(value="Preparando...")
+        ttk.Label(box, textvariable=status_var, width=54, wraplength=420).pack(anchor="w", pady=(10, 8))
+        pb = ttk.Progressbar(box, mode="indeterminate", length=360)
+        pb.pack(fill="x")
+        pb.start(10)
+        try:
+            progress.update_idletasks()
+            x = self.winfo_rootx() + max(0, (self.winfo_width() - progress.winfo_width()) // 2)
+            y = self.winfo_rooty() + max(0, (self.winfo_height() - progress.winfo_height()) // 2)
+            progress.geometry(f"+{x}+{y}")
+        except Exception:
+            pass
+
+        if hasattr(self, "start_view") and self.start_view is not None:
+            try:
+                self.start_view.btn_cargar_auto.config(state="disabled")
+            except Exception:
+                pass
+
+        def set_status(text: str):
+            try:
+                self.after(0, lambda: status_var.set(text))
+            except Exception:
+                pass
+
+        def worker():
+            try:
+                paths = asyncio.run(auto_download_articulos_y_packs(usuario, password, set_status))
+                set_status("Procesando maestro de packs...")
+                packs_df, packs_index = load_packs_data(Path(paths["packs"]))
+                result = {
+                    "articulos": Path(paths["articulos"]),
+                    "packs": Path(paths["packs"]),
+                    "packs_df": packs_df,
+                    "packs_index": packs_index,
+                }
+
+                def done():
+                    try:
+                        pb.stop()
+                        progress.destroy()
+                    except Exception:
+                        pass
+
+                    self.listado_path = result["articulos"]
+                    self.packs_path = result["packs"]
+                    self.packs_df = result["packs_df"]
+                    self.packs_index = result["packs_index"]
+
+                    prefs = load_prefs()
+                    prefs["last_dir"] = str(AUTO_DOWNLOAD_DIR)
+                    save_prefs(prefs)
+
+                    if hasattr(self, "start_view") and self.start_view is not None:
+                        try:
+                            self.start_view.set_listado_cargado(True)
+                            self.start_view.set_packs_cargado(True)
+                            self.start_view.btn_cargar_auto.config(state="normal")
+                        except Exception:
+                            pass
+
+                    messagebox.showinfo(
+                        "Carga automática lista",
+                        "Se descargaron y cargaron correctamente los archivos.\n\n"
+                        f"Listado: {self.listado_path.name}\n"
+                        f"Packs: {self.packs_path.name}\n"
+                        f"Artículos con packs: {len(self.packs_index)}",
+                    )
+
+                self.after(0, done)
+            except Exception as exc:
+                err = str(exc)
+
+                def fail():
+                    try:
+                        pb.stop()
+                        progress.destroy()
+                    except Exception:
+                        pass
+                    if hasattr(self, "start_view") and self.start_view is not None:
+                        try:
+                            self.start_view.btn_cargar_auto.config(state="normal")
+                        except Exception:
+                            pass
+                    messagebox.showerror(
+                        "Error en carga automática",
+                        "No se pudo completar la carga automática.\n"
+                        "No se cambió lo que ya estaba cargado.\n\n"
+                        f"Detalle: {err}",
+                    )
+
+                self.after(0, fail)
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _clear(self):
         for w in self.winfo_children():
             w.destroy()
@@ -2822,6 +3342,7 @@ class RootApp(tk.Tk):
             on_load_listado=self._choose_listado_inicial,
             on_load_packs=self._choose_packs_inicial,
             on_load_ranges=self._choose_ranges_inicial,
+            on_auto_load=self._auto_load_articulos_packs,
             on_check_update=self._manual_update_check,
             listado_cargado=self.listado_path is not None,
             packs_cargado=bool(self.packs_index),
