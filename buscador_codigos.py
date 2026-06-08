@@ -632,6 +632,13 @@ async def _auto_launch_browser(playwright, downloads_path: Path):
     kwargs = {
         "headless": True,
         "downloads_path": str(downloads_path),
+        "args": [
+            "--incognito",
+            "--disable-application-cache",
+            "--disable-cache",
+            "--disk-cache-size=0",
+            "--media-cache-size=0",
+        ],
     }
     errors = []
 
@@ -655,7 +662,16 @@ async def _auto_launch_browser(playwright, downloads_path: Path):
 
 async def _auto_new_page(playwright):
     browser = await _auto_launch_browser(playwright, AUTO_DOWNLOAD_DIR)
-    context = await browser.new_context(accept_downloads=True, bypass_csp=True)
+    context = await browser.new_context(
+        accept_downloads=True,
+        bypass_csp=True,
+        ignore_https_errors=True,
+        extra_http_headers={
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+        },
+    )
+    await context.clear_cookies()
     page = await context.new_page()
     return browser, context, page
 
@@ -890,6 +906,48 @@ async def _auto_click_classic_sales_report(page):
     if not result.get("ok"):
         raise AutoDownloadError("No se encontró el enlace clásico 'Informes de Ventas'.")
 
+async def _auto_click_lista_precios_tab(page):
+    locator = page.locator("text=Lista de Precios").last
+    await locator.wait_for(state="visible", timeout=25000)
+    await locator.scroll_into_view_if_needed()
+
+    for action in (
+        lambda: locator.click(timeout=5000),
+        lambda: locator.click(timeout=5000, force=True),
+    ):
+        try:
+            await action()
+            await _auto_pause(0.5)
+            return
+        except Exception as exc:
+            _auto_log(f"Click Lista de Precios reintentado: {exc}")
+
+    clicked = await page.evaluate(
+        """
+        () => {
+            const normalize = (txt) => (txt || '').replace(/\\s+/g, ' ').trim();
+            const visible = (el) => {
+                const style = window.getComputedStyle(el);
+                const rect = el.getBoundingClientRect();
+                return style.display !== 'none'
+                    && style.visibility !== 'hidden'
+                    && rect.width > 0
+                    && rect.height > 0;
+            };
+            const candidates = Array.from(document.querySelectorAll('a, [role="tab"], [role="link"], li, span, div'))
+                .filter((el) => normalize(el.innerText || el.textContent) === 'Lista de Precios' && visible(el));
+            const target = candidates[candidates.length - 1];
+            if (!target) return false;
+            target.scrollIntoView({ block: 'center', inline: 'nearest' });
+            target.click();
+            return true;
+        }
+        """
+    )
+    if not clicked:
+        raise AutoDownloadError("No se pudo hacer clic en la pestaña Lista de Precios.")
+    await _auto_pause(0.5)
+
 async def _auto_get_price_report_frame(base_page):
     limit = asyncio.get_event_loop().time() + 15
     while asyncio.get_event_loop().time() < limit:
@@ -913,12 +971,7 @@ async def _auto_download_price_ranges(context, page) -> Path:
     await _auto_pause(0.2)
 
     await _auto_click_classic_sales_report(erp_page)
-    await erp_page.locator("text=Lista de Precios").last.wait_for(state="visible", timeout=25000)
-
-    price_tab = erp_page.locator("text=Lista de Precios").last
-    await price_tab.scroll_into_view_if_needed()
-    await price_tab.click()
-    await _auto_pause(0.5)
+    await _auto_click_lista_precios_tab(erp_page)
 
     rframe = await _auto_get_price_report_frame(erp_page)
     radio_result = await rframe.evaluate(
