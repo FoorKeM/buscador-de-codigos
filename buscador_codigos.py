@@ -80,6 +80,7 @@ import difflib
 import urllib.request
 import numpy as np
 from html.parser import HTMLParser
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -499,7 +500,9 @@ except Exception:
 CACHE_DB_PATH = CACHE_DIR / "base_codigos_cache.pkl"
 CACHE_DB_META = CACHE_DIR / "base_codigos_cache_meta.json"
 AUTO_DOWNLOAD_DIR = APP_DATA_DIR / "auto_downloads"
+AUTO_DOWNLOAD_STAGING_DIR = APP_DATA_DIR / "auto_downloads_tmp"
 AUTO_CREDENTIALS_PATH = APP_DATA_DIR / "credenciales_auto.json"
+AUTO_LAST_LOAD_PATH = APP_DATA_DIR / "ultima_carga_automatica.json"
 AUTO_DIAG_DIR = APP_DATA_DIR / "diagnosticos_auto"
 MERCADOHOUSE_SYNC_DATA_DIR = Path(os.getenv("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")) / "MercadohouseSync"
 MERCADOHOUSE_SYNC_CONFIG_PATH = MERCADOHOUSE_SYNC_DATA_DIR / "config_sucursal.json"
@@ -568,13 +571,45 @@ def save_auto_credentials(usuario: str, password: str):
     except Exception:
         pass
 
+def load_auto_last_load() -> dict:
+    try:
+        with open(AUTO_LAST_LOAD_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+def save_auto_last_load(articulos: Path, packs: Path, precios: Path):
+    try:
+        AUTO_LAST_LOAD_PATH.parent.mkdir(parents=True, exist_ok=True)
+        data = {
+            "downloaded_at": datetime.now().isoformat(timespec="seconds"),
+            "articulos": str(Path(articulos)),
+            "packs": str(Path(packs)),
+            "precios": str(Path(precios)),
+        }
+        with open(AUTO_LAST_LOAD_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+def format_auto_last_load_date(value: str) -> str:
+    try:
+        dt = datetime.fromisoformat(str(value))
+        return dt.strftime("%d-%m-%Y %H:%M")
+    except Exception:
+        return str(value or "").strip()
+
 class AutoDownloadError(Exception):
     pass
 
-def _clean_auto_download_dir() -> int:
-    AUTO_DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+def _clean_auto_download_dir(download_dir: Path = AUTO_DOWNLOAD_DIR) -> int:
+    download_dir = Path(download_dir)
+    download_dir.mkdir(parents=True, exist_ok=True)
     deleted = 0
-    for path in AUTO_DOWNLOAD_DIR.iterdir():
+    for path in download_dir.iterdir():
         if path.is_file():
             try:
                 path.unlink()
@@ -594,6 +629,17 @@ def _auto_active_price_list_name() -> str:
     except Exception:
         pass
     return AUTO_SYNC_SUCURSALES.get(key, AUTO_SYNC_SUCURSALES[AUTO_SYNC_DEFAULT_SUCURSAL])
+
+def _promote_auto_downloads(paths: dict) -> dict:
+    AUTO_DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    _clean_auto_download_dir(AUTO_DOWNLOAD_DIR)
+    promoted = {}
+    for key, src in paths.items():
+        src_path = Path(src)
+        dst_path = AUTO_DOWNLOAD_DIR / src_path.name
+        shutil.move(str(src_path), str(dst_path))
+        promoted[key] = dst_path
+    return promoted
 
 def _auto_log_path() -> Path:
     AUTO_DIAG_DIR.mkdir(parents=True, exist_ok=True)
@@ -654,8 +700,8 @@ async def _auto_launch_browser(playwright, downloads_path: Path):
         "Instala Microsoft Edge o Google Chrome.\n\nDetalle: " + detail
     )
 
-async def _auto_new_page(playwright):
-    browser = await _auto_launch_browser(playwright, AUTO_DOWNLOAD_DIR)
+async def _auto_new_page(playwright, download_dir: Path = AUTO_DOWNLOAD_DIR):
+    browser = await _auto_launch_browser(playwright, download_dir)
     context = await browser.new_context(accept_downloads=True, bypass_csp=True)
     page = await context.new_page()
     return browser, context, page
@@ -802,7 +848,7 @@ async def _auto_open_pos(context, page):
     await pos_page.locator("text=Artículos").first.wait_for(state="visible", timeout=25000)
     return pos_page
 
-async def _auto_download_from_pos(pos_page, section_name: str, fallback_name: str) -> Path:
+async def _auto_download_from_pos(pos_page, section_name: str, fallback_name: str, download_dir: Path) -> Path:
     await pos_page.locator("text=Artículos").first.click()
     await pos_page.get_by_role("link", name=section_name, exact=True).wait_for(state="visible", timeout=15000)
     await pos_page.get_by_role("link", name=section_name, exact=True).click()
@@ -812,7 +858,7 @@ async def _auto_download_from_pos(pos_page, section_name: str, fallback_name: st
         await pos_page.get_by_role("button", name="Exportar").click()
     download = await download_info.value
     file_name = download.suggested_filename or fallback_name
-    target = AUTO_DOWNLOAD_DIR / file_name
+    target = Path(download_dir) / file_name
     await download.save_as(str(target))
     if not target.exists():
         raise AutoDownloadError(f"No se encontró el archivo descargado: {target}")
@@ -936,7 +982,7 @@ async def _auto_get_price_report_frame(base_page):
         await _auto_pause(0.3)
     return base_page
 
-async def _auto_download_price_ranges(context, page) -> Path:
+async def _auto_download_price_ranges(context, page, download_dir: Path) -> Path:
     erp_page = await _auto_open_erp(context, page)
 
     await erp_page.locator("text=Ventas").first.click()
@@ -997,7 +1043,7 @@ async def _auto_download_price_ranges(context, page) -> Path:
         await rframe.locator("a:has-text('Exportar'), button:has-text('Exportar'), input[value='Exportar']").last.click(force=True)
     download = await download_info.value
     file_name = download.suggested_filename or "lista_precios.xlsx"
-    target = AUTO_DOWNLOAD_DIR / file_name
+    target = Path(download_dir) / file_name
     await download.save_as(str(target))
     if not target.exists():
         raise AutoDownloadError(f"No se encontró la lista de precios descargada: {target}")
@@ -1009,8 +1055,8 @@ async def auto_download_articulos_packs_y_precios(usuario: str, password: str, p
         if progress_cb:
             progress_cb(text)
 
-    progress("Limpiando descargas anteriores...")
-    _clean_auto_download_dir()
+    progress("Preparando descarga temporal...")
+    _clean_auto_download_dir(AUTO_DOWNLOAD_STAGING_DIR)
 
     try:
         from playwright.async_api import async_playwright
@@ -1024,7 +1070,7 @@ async def auto_download_articulos_packs_y_precios(usuario: str, password: str, p
     try:
         async with async_playwright() as p:
             progress("Abriendo navegador automático...")
-            browser, context, page = await _auto_new_page(p)
+            browser, context, page = await _auto_new_page(p, AUTO_DOWNLOAD_STAGING_DIR)
 
             progress("Iniciando sesión en Tivendo...")
             await _auto_login_tivendo(page, usuario, password)
@@ -1040,15 +1086,26 @@ async def auto_download_articulos_packs_y_precios(usuario: str, password: str, p
                 pos_page,
                 "Listado de artículos",
                 "listado_articulos.xlsx",
+                AUTO_DOWNLOAD_STAGING_DIR,
             )
 
             progress("Descargando maestro de packs...")
-            packs_path = await _auto_download_from_pos(pos_page, "Packs", "packs.xlsx")
+            packs_path = await _auto_download_from_pos(
+                pos_page,
+                "Packs",
+                "packs.xlsx",
+                AUTO_DOWNLOAD_STAGING_DIR,
+            )
 
             progress("Descargando lista de precios...")
-            prices_path = await _auto_download_price_ranges(context, page)
+            prices_path = await _auto_download_price_ranges(context, page, AUTO_DOWNLOAD_STAGING_DIR)
 
-            return {"articulos": articulos_path, "packs": packs_path, "precios": prices_path}
+            progress("Guardando última descarga correcta...")
+            return _promote_auto_downloads({
+                "articulos": articulos_path,
+                "packs": packs_path,
+                "precios": prices_path,
+            })
     except AutoDownloadError:
         raise
     except Exception as exc:
@@ -1876,6 +1933,7 @@ class StartView(ttk.Frame):
         listado_cargado: bool,
         packs_cargado: bool,
         ranges_cargado: bool,
+        auto_last_load_text: str = "",
     ):
         super().__init__(master)
         self.master.title("Buscador de Códigos — MERCADO HOUSE")
@@ -1936,6 +1994,8 @@ class StartView(ttk.Frame):
         self.lbl_estado_packs.pack(pady=(2, 0), anchor="w")
         self.lbl_estado_rangos = ttk.Label(self, text="", foreground="#555")
         self.lbl_estado_rangos.pack(pady=(2, 0), anchor="w")
+        self.lbl_estado_auto = ttk.Label(self, text="", foreground="#555")
+        self.lbl_estado_auto.pack(pady=(2, 0), anchor="w")
 
         footer = ttk.Frame(self)
         footer.pack(side="bottom", fill="x")
@@ -1947,6 +2007,7 @@ class StartView(ttk.Frame):
         self.set_listado_cargado(listado_cargado)
         self.set_packs_cargado(packs_cargado)
         self.set_ranges_cargado(ranges_cargado)
+        self.set_auto_last_load(auto_last_load_text)
 
     @staticmethod
     def _estado_texto(cargado: bool) -> str:
@@ -1984,6 +2045,15 @@ class StartView(ttk.Frame):
     def set_ranges_cargado(self, cargado: bool):
         try:
             self.lbl_estado_rangos.config(text=self._estado_rangos_texto(cargado))
+        except Exception:
+            pass
+
+    def set_auto_last_load(self, texto: str):
+        try:
+            if texto:
+                self.lbl_estado_auto.config(text=f"Última carga automática: {texto}")
+            else:
+                self.lbl_estado_auto.config(text="Última carga automática: sin registro")
         except Exception:
             pass
 
@@ -3097,11 +3167,13 @@ class RootApp(tk.Tk):
         self.ranges_path: Optional[Path] = None
         self.ranges_df = None
         self.ranges_index = {}
+        self.auto_last_load_text = ""
 
         ensure_empresas_seed_applied()  # Sincroniza empresas.json con la semilla y conserva agregados
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # La selección del LISTADO DE ARTÍCULOS ahora se hace desde el menú principal
+        self._restore_last_auto_load()
         self._show_start()
         self.after(1000, _cleanup_successful_update_backups)
         self.after(2000, self._start_update_check)
@@ -3114,6 +3186,35 @@ class RootApp(tk.Tk):
         except Exception:
             pass
         self.destroy()
+
+    def _restore_last_auto_load(self):
+        data = load_auto_last_load()
+        try:
+            articulos_raw = str(data.get("articulos", "")).strip()
+            packs_raw = str(data.get("packs", "")).strip()
+            precios_raw = str(data.get("precios", "")).strip()
+            if not (articulos_raw and packs_raw and precios_raw):
+                return
+
+            articulos = Path(articulos_raw)
+            packs = Path(packs_raw)
+            precios = Path(precios_raw)
+            if not (articulos.exists() and packs.exists() and precios.exists()):
+                return
+
+            packs_df, packs_index = load_packs_data(packs)
+            ranges_df, ranges_index = load_price_ranges_data(precios)
+
+            self.listado_path = articulos
+            self.packs_path = packs
+            self.packs_df = packs_df
+            self.packs_index = packs_index
+            self.ranges_path = precios
+            self.ranges_df = ranges_df
+            self.ranges_index = ranges_index
+            self.auto_last_load_text = format_auto_last_load_date(data.get("downloaded_at", ""))
+        except Exception as exc:
+            _auto_log(f"No se pudo restaurar última carga automática: {exc}")
 
     def _start_update_check(self):
         if not _is_frozen_app():
@@ -3413,6 +3514,8 @@ class RootApp(tk.Tk):
                     self.ranges_path = result["precios"]
                     self.ranges_df = result["ranges_df"]
                     self.ranges_index = result["ranges_index"]
+                    save_auto_last_load(self.listado_path, self.packs_path, self.ranges_path)
+                    self.auto_last_load_text = format_auto_last_load_date(load_auto_last_load().get("downloaded_at", ""))
 
                     prefs = load_prefs()
                     prefs["last_dir"] = str(AUTO_DOWNLOAD_DIR)
@@ -3423,6 +3526,7 @@ class RootApp(tk.Tk):
                             self.start_view.set_listado_cargado(True)
                             self.start_view.set_packs_cargado(True)
                             self.start_view.set_ranges_cargado(True)
+                            self.start_view.set_auto_last_load(self.auto_last_load_text)
                             self.start_view.btn_cargar_auto.config(state="normal")
                         except Exception:
                             pass
@@ -3562,6 +3666,7 @@ class RootApp(tk.Tk):
             listado_cargado=self.listado_path is not None,
             packs_cargado=bool(self.packs_index),
             ranges_cargado=bool(self.ranges_index),
+            auto_last_load_text=self.auto_last_load_text,
         )
 
     def _require_listado(self) -> bool:
