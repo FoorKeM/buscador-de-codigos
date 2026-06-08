@@ -101,7 +101,7 @@ _RE_NON_ALNUM = re.compile(r"[^A-Z0-9]")    # elimina no-alfanuméricos (normali
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
 TMP_DIR      = Path(tempfile.gettempdir())  # directorio temporal del sistema
-APP_VERSION  = "v103"
+APP_VERSION  = "v104"
 GITHUB_REPO  = "FoorKeM/buscador-de-codigos"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000
@@ -501,6 +501,14 @@ CACHE_DB_META = CACHE_DIR / "base_codigos_cache_meta.json"
 AUTO_DOWNLOAD_DIR = APP_DATA_DIR / "auto_downloads"
 AUTO_CREDENTIALS_PATH = APP_DATA_DIR / "credenciales_auto.json"
 AUTO_DIAG_DIR = APP_DATA_DIR / "diagnosticos_auto"
+MERCADOHOUSE_SYNC_DATA_DIR = Path(os.getenv("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")) / "MercadohouseSync"
+MERCADOHOUSE_SYNC_CONFIG_PATH = MERCADOHOUSE_SYNC_DATA_DIR / "config_sucursal.json"
+AUTO_SYNC_SUCURSALES = {
+    "LIBERTADOR": "LISTA LOS LIBERTADORES 1476",
+    "CANTERA": "LISTA LA CANTERA 3055",
+    "BALMACEDA": "LISTA BALMACEDA 599",
+}
+AUTO_SYNC_DEFAULT_SUCURSAL = "LIBERTADOR"
 
 # Limpieza automática de archivos temporales de BASE DE DATOS al salir
 def _cleanup_tmp_bases():
@@ -574,6 +582,18 @@ def _clean_auto_download_dir() -> int:
             except Exception:
                 pass
     return deleted
+
+def _auto_active_price_list_name() -> str:
+    key = AUTO_SYNC_DEFAULT_SUCURSAL
+    try:
+        if MERCADOHOUSE_SYNC_CONFIG_PATH.exists():
+            data = json.loads(MERCADOHOUSE_SYNC_CONFIG_PATH.read_text(encoding="utf-8"))
+            saved_key = str(data.get("sucursal", "")).upper().strip()
+            if saved_key in AUTO_SYNC_SUCURSALES:
+                key = saved_key
+    except Exception:
+        pass
+    return AUTO_SYNC_SUCURSALES.get(key, AUTO_SYNC_SUCURSALES[AUTO_SYNC_DEFAULT_SUCURSAL])
 
 def _auto_log_path() -> Path:
     AUTO_DIAG_DIR.mkdir(parents=True, exist_ok=True)
@@ -806,7 +826,155 @@ async def _auto_download_from_pos(pos_page, section_name: str, fallback_name: st
         raise AutoDownloadError(f"No se encontró el archivo descargado: {target}")
     return target
 
-async def auto_download_articulos_y_packs(usuario: str, password: str, progress_cb=None) -> dict:
+async def _auto_wait_erp_open(page):
+    limit = asyncio.get_event_loop().time() + 45
+    while asyncio.get_event_loop().time() < limit:
+        for text in ("Ecosistema Digital", "Clientes y Productos", "Listado de Documentos"):
+            try:
+                if await page.get_by_text(text, exact=True).count() > 0:
+                    return
+            except Exception:
+                pass
+
+        try:
+            in_portal = "portal.defontana.com/dashboard" in page.url
+            erp_card = page.get_by_text("ERP Digital", exact=True).last
+            if in_portal and await erp_card.count() > 0:
+                await erp_card.click()
+        except Exception:
+            pass
+        await _auto_pause(0.5)
+
+    raise AutoDownloadError(f"ERP Digital no terminó de abrir. URL actual: {page.url}")
+
+async def _auto_open_erp(context, page):
+    erp_page = await _auto_click_capture_page(
+        context,
+        page,
+        page.get_by_text("ERP Digital", exact=True).last,
+    )
+    await _auto_wait_erp_open(erp_page)
+    return erp_page
+
+async def _auto_click_classic_sales_report(page):
+    exact_links = page.get_by_role("link", name="Informes de Ventas", exact=True)
+    if await exact_links.count() > 0:
+        target = exact_links.last
+        await target.scroll_into_view_if_needed()
+        await target.click()
+        return
+
+    result = await page.evaluate(
+        """
+        () => {
+            const normalize = (txt) => (txt || '').replace(/\\s+/g, ' ').trim();
+            const visible = Array.from(document.querySelectorAll('a, [role="link"], li, div, span'))
+                .filter((el) => {
+                    const text = normalize(el.innerText || el.textContent);
+                    if (text !== 'Informes de Ventas') return false;
+                    const style = window.getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    return style.display !== 'none'
+                        && style.visibility !== 'hidden'
+                        && rect.width > 0
+                        && rect.height > 0;
+                });
+            const target = visible[visible.length - 1];
+            if (!target) return { ok: false, count: visible.length };
+            target.scrollIntoView({ block: 'center', inline: 'nearest' });
+            target.click();
+            return { ok: true, count: visible.length };
+        }
+        """
+    )
+    if not result.get("ok"):
+        raise AutoDownloadError("No se encontró el enlace clásico 'Informes de Ventas'.")
+
+async def _auto_get_price_report_frame(base_page):
+    limit = asyncio.get_event_loop().time() + 15
+    while asyncio.get_event_loop().time() < limit:
+        for frame in base_page.frames:
+            try:
+                if await frame.locator("input[type='radio']").count() > 0:
+                    return frame
+            except Exception:
+                pass
+        await _auto_pause(0.3)
+    return base_page
+
+async def _auto_download_price_ranges(context, page) -> Path:
+    erp_page = await _auto_open_erp(context, page)
+
+    await erp_page.locator("text=Ventas").first.click()
+    await _auto_pause(0.2)
+    sales_items = erp_page.locator("text=Ventas")
+    if await sales_items.count() >= 2:
+        await sales_items.nth(1).click()
+    await _auto_pause(0.2)
+
+    await _auto_click_classic_sales_report(erp_page)
+    await erp_page.locator("text=Lista de Precios").last.wait_for(state="visible", timeout=25000)
+
+    price_tab = erp_page.locator("text=Lista de Precios").last
+    await price_tab.scroll_into_view_if_needed()
+    await price_tab.click()
+    await _auto_pause(0.5)
+
+    rframe = await _auto_get_price_report_frame(erp_page)
+    radio_result = await rframe.evaluate(
+        """
+        () => {
+            const radios = document.querySelectorAll('input[type="radio"]');
+            for (const r of radios) {
+                const txt = (r.parentElement?.innerText || r.labels?.[0]?.innerText || '');
+                if (txt.toLowerCase().includes('una en particular')) {
+                    r.click();
+                    return 'ok-text';
+                }
+            }
+            if (radios.length >= 2) {
+                radios[1].click();
+                return 'ok-fallback';
+            }
+            return 'not-found';
+        }
+        """
+    )
+    if radio_result == "not-found":
+        raise AutoDownloadError("No se encontró la opción para seleccionar una lista de precios en particular.")
+
+    select_loc = rframe.locator("select").first
+    try:
+        await select_loc.wait_for(state="visible", timeout=10000)
+    except Exception:
+        pass
+
+    options = await rframe.evaluate(
+        "() => Array.from(document.querySelectorAll('select option')).map(o => ({v: o.value, t: o.text.trim()}))"
+    )
+    list_name = _auto_active_price_list_name()
+    match = next((o for o in options if list_name.upper() in o["t"].upper()), None)
+    if not match:
+        keyword = list_name.split()[1] if len(list_name.split()) > 1 else list_name
+        match = next((o for o in options if keyword.upper() in o["t"].upper()), None)
+    if not match:
+        found = ", ".join(o["t"] for o in options[:12])
+        raise AutoDownloadError(f"No se encontró '{list_name}' en Lista de Precios. Opciones visibles: {found}")
+
+    await select_loc.select_option(value=match["v"])
+    await _auto_pause(0.2)
+
+    async with erp_page.expect_download(timeout=30000) as download_info:
+        await rframe.locator("a:has-text('Exportar'), button:has-text('Exportar'), input[value='Exportar']").last.click(force=True)
+    download = await download_info.value
+    file_name = download.suggested_filename or "lista_precios.xlsx"
+    target = AUTO_DOWNLOAD_DIR / file_name
+    await download.save_as(str(target))
+    if not target.exists():
+        raise AutoDownloadError(f"No se encontró la lista de precios descargada: {target}")
+    return target
+
+async def auto_download_articulos_packs_y_precios(usuario: str, password: str, progress_cb=None) -> dict:
     def progress(text: str):
         _auto_log(text)
         if progress_cb:
@@ -848,7 +1016,10 @@ async def auto_download_articulos_y_packs(usuario: str, password: str, progress_
             progress("Descargando maestro de packs...")
             packs_path = await _auto_download_from_pos(pos_page, "Packs", "packs.xlsx")
 
-            return {"articulos": articulos_path, "packs": packs_path}
+            progress("Descargando lista de precios...")
+            prices_path = await _auto_download_price_ranges(context, page)
+
+            return {"articulos": articulos_path, "packs": packs_path, "precios": prices_path}
     except AutoDownloadError:
         raise
     except Exception as exc:
@@ -859,6 +1030,10 @@ async def auto_download_articulos_y_packs(usuario: str, password: str, progress_
                 await browser.close()
             except Exception:
                 pass
+
+async def auto_download_articulos_y_packs(usuario: str, password: str, progress_cb=None) -> dict:
+    result = await auto_download_articulos_packs_y_precios(usuario, password, progress_cb)
+    return {"articulos": result["articulos"], "packs": result["packs"]}
 
 # =====================================================
 #  Proveedores (empresas) — persistencia
@@ -3152,7 +3327,7 @@ class RootApp(tk.Tk):
         progress.resizable(False, False)
         box = ttk.Frame(progress, padding=16)
         box.pack(fill="both", expand=True)
-        ttk.Label(box, text="Descargando artículos y packs...", font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
+        ttk.Label(box, text="Descargando artículos, packs y precios...", font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
         status_var = tk.StringVar(value="Preparando...")
         ttk.Label(box, textvariable=status_var, width=54, wraplength=420).pack(anchor="w", pady=(10, 8))
         pb = ttk.Progressbar(box, mode="indeterminate", length=360)
@@ -3180,14 +3355,19 @@ class RootApp(tk.Tk):
 
         def worker():
             try:
-                paths = asyncio.run(auto_download_articulos_y_packs(usuario, password, set_status))
+                paths = asyncio.run(auto_download_articulos_packs_y_precios(usuario, password, set_status))
                 set_status("Procesando maestro de packs...")
                 packs_df, packs_index = load_packs_data(Path(paths["packs"]))
+                set_status("Procesando lista de precios...")
+                ranges_df, ranges_index = load_price_ranges_data(Path(paths["precios"]))
                 result = {
                     "articulos": Path(paths["articulos"]),
                     "packs": Path(paths["packs"]),
+                    "precios": Path(paths["precios"]),
                     "packs_df": packs_df,
                     "packs_index": packs_index,
+                    "ranges_df": ranges_df,
+                    "ranges_index": ranges_index,
                 }
 
                 def done():
@@ -3201,6 +3381,9 @@ class RootApp(tk.Tk):
                     self.packs_path = result["packs"]
                     self.packs_df = result["packs_df"]
                     self.packs_index = result["packs_index"]
+                    self.ranges_path = result["precios"]
+                    self.ranges_df = result["ranges_df"]
+                    self.ranges_index = result["ranges_index"]
 
                     prefs = load_prefs()
                     prefs["last_dir"] = str(AUTO_DOWNLOAD_DIR)
@@ -3210,6 +3393,7 @@ class RootApp(tk.Tk):
                         try:
                             self.start_view.set_listado_cargado(True)
                             self.start_view.set_packs_cargado(True)
+                            self.start_view.set_ranges_cargado(True)
                             self.start_view.btn_cargar_auto.config(state="normal")
                         except Exception:
                             pass
@@ -3219,7 +3403,9 @@ class RootApp(tk.Tk):
                         "Se descargaron y cargaron correctamente los archivos.\n\n"
                         f"Listado: {self.listado_path.name}\n"
                         f"Packs: {self.packs_path.name}\n"
-                        f"Artículos con packs: {len(self.packs_index)}",
+                        f"Lista de precios: {self.ranges_path.name}\n"
+                        f"Artículos con packs: {len(self.packs_index)}\n"
+                        f"Artículos con rangos: {len(self.ranges_index)}",
                     )
 
                 self.after(0, done)
