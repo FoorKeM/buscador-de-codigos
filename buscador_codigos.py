@@ -632,13 +632,7 @@ async def _auto_launch_browser(playwright, downloads_path: Path):
     kwargs = {
         "headless": True,
         "downloads_path": str(downloads_path),
-        "args": [
-            "--incognito",
-            "--disable-application-cache",
-            "--disable-cache",
-            "--disk-cache-size=0",
-            "--media-cache-size=0",
-        ],
+        "args": ["--incognito"],
     }
     errors = []
 
@@ -662,16 +656,7 @@ async def _auto_launch_browser(playwright, downloads_path: Path):
 
 async def _auto_new_page(playwright):
     browser = await _auto_launch_browser(playwright, AUTO_DOWNLOAD_DIR)
-    context = await browser.new_context(
-        accept_downloads=True,
-        bypass_csp=True,
-        ignore_https_errors=True,
-        extra_http_headers={
-            "Cache-Control": "no-cache",
-            "Pragma": "no-cache",
-        },
-    )
-    await context.clear_cookies()
+    context = await browser.new_context(accept_downloads=True, bypass_csp=True)
     page = await context.new_page()
     return browser, context, page
 
@@ -695,41 +680,32 @@ async def _auto_login_tivendo(page, usuario: str, password: str):
     _auto_log("Abriendo login Tivendo")
     await page.goto("https://tivendoapp.defontana.com/login", timeout=30000)
     try:
-        await page.wait_for_selector("input", state="visible", timeout=15000)
+        await page.wait_for_selector("input", state="visible", timeout=10000)
     except Exception:
         await _auto_wait_light(page)
         if "login" not in page.url.lower():
+            _auto_log("Sesion Tivendo reutilizada")
             return
         await page.wait_for_selector("input", state="visible", timeout=20000)
 
+    _auto_log("Ingresando credenciales Tivendo")
     inputs = page.locator("input")
     await inputs.nth(0).click()
-    await inputs.nth(0).fill("")
     await inputs.nth(0).press_sequentially(usuario, delay=20)
     await _auto_pause()
     await inputs.nth(1).click()
-    await inputs.nth(1).fill("")
     await inputs.nth(1).press_sequentially(password, delay=20)
     await _auto_pause()
-
-    login_buttons = ("Iniciar Sesión", "Iniciar Sesion", "Ingresar", "Entrar")
-    last_error = None
-    for button in login_buttons:
-        try:
-            await page.get_by_role("button", name=button).click(timeout=4000)
-            break
-        except Exception as exc:
-            last_error = exc
-    else:
-        raise last_error
-
+    await page.get_by_role("button", name="Iniciar Sesión").click()
+    _auto_log("Esperando redireccion")
     try:
-        await page.wait_for_url(lambda url: "login" not in url.lower(), timeout=25000)
+        await page.wait_for_url(lambda url: "login" not in url.lower(), timeout=20000)
     except Exception:
         pass
     await _auto_wait_light(page)
     if "login" in page.url.lower():
-        raise AutoDownloadError("No se pudo iniciar sesión en Tivendo. Revisa usuario y contraseña.")
+        raise AutoDownloadError("Login Tivendo fallido")
+    _auto_log("Login Tivendo exitoso")
 
 async def _auto_read_company(page) -> str:
     for text in ("MERCADO HOUSE SPA", "MERCADO HOUSE", "NO USAR"):
