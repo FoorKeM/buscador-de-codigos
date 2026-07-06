@@ -102,7 +102,7 @@ _RE_NON_ALNUM = re.compile(r"[^A-Z0-9]")    # elimina no-alfanuméricos (normali
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
 TMP_DIR      = Path(tempfile.gettempdir())  # directorio temporal del sistema
-APP_VERSION  = "v104"
+APP_VERSION  = "v105"
 GITHUB_REPO  = "FoorKeM/buscador-de-codigos"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000
@@ -678,7 +678,17 @@ async def _auto_launch_browser(playwright, downloads_path: Path):
     kwargs = {
         "headless": True,
         "downloads_path": str(downloads_path),
-        "args": ["--incognito"],
+        "args": [
+            "--headless=new",
+            "--incognito",
+            "--disable-gpu",
+            "--disable-dev-shm-usage",
+            "--disable-software-rasterizer",
+            "--hide-scrollbars",
+            "--mute-audio",
+            "--window-position=-32000,-32000",
+            "--window-size=1,1",
+        ],
     }
     errors = []
 
