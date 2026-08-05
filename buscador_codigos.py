@@ -102,7 +102,7 @@ _RE_NON_ALNUM = re.compile(r"[^A-Z0-9]")    # elimina no-alfanuméricos (normali
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
 TMP_DIR      = Path(tempfile.gettempdir())  # directorio temporal del sistema
-APP_VERSION  = "v105"
+APP_VERSION  = "v106"
 GITHUB_REPO  = "FoorKeM/buscador-de-codigos"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000
@@ -992,6 +992,68 @@ async def _auto_get_price_report_frame(base_page):
         await _auto_pause(0.3)
     return base_page
 
+async def _auto_try_confirm_popup_download(popup):
+    labels = ("Descargar", "Guardar", "Aceptar", "Excel", "Exportar", "Generar", "Continuar")
+    for label in labels:
+        locators = (
+            popup.get_by_role("button", name=label),
+            popup.get_by_role("link", name=label),
+            popup.locator(f"button:has-text('{label}'), a:has-text('{label}'), input[value*='{label}']"),
+        )
+        for locator in locators:
+            try:
+                if await locator.count() > 0:
+                    await locator.first.click(timeout=3000, force=True)
+                    _auto_log(f"Confirmación en popup: {label}")
+                    return True
+            except Exception:
+                continue
+    return False
+
+async def _auto_wait_price_export_download(erp_page, rframe):
+    export_locator = rframe.locator(
+        "a:has-text('Exportar'), button:has-text('Exportar'), input[value='Exportar']"
+    ).last
+
+    direct_download_task = asyncio.create_task(erp_page.wait_for_event("download", timeout=45000))
+    popup_task = asyncio.create_task(erp_page.wait_for_event("popup", timeout=45000))
+
+    try:
+        await export_locator.click(force=True)
+        done, pending = await asyncio.wait(
+            {direct_download_task, popup_task},
+            return_when=asyncio.FIRST_COMPLETED,
+            timeout=45000,
+        )
+        if not done:
+            raise AutoDownloadError("No comenzó la descarga ni apareció ventana nueva al exportar Lista de Precios.")
+
+        if direct_download_task in done:
+            popup_task.cancel()
+            _auto_log("Lista de Precios: descarga directa detectada")
+            return direct_download_task.result()
+
+        popup = popup_task.result()
+        direct_download_task.cancel()
+        _auto_log("Lista de Precios: ventana nueva de exportación detectada")
+        await _auto_wait_light(popup, timeout=15000)
+
+        popup_download_task = asyncio.create_task(popup.wait_for_event("download", timeout=45000))
+        try:
+            await _auto_try_confirm_popup_download(popup)
+            return await popup_download_task
+        finally:
+            if not popup_download_task.done():
+                popup_download_task.cancel()
+            try:
+                await popup.close()
+            except Exception:
+                pass
+    finally:
+        for task in (direct_download_task, popup_task):
+            if not task.done():
+                task.cancel()
+
 async def _auto_download_price_ranges(context, page, download_dir: Path) -> Path:
     erp_page = await _auto_open_erp(context, page)
 
@@ -1049,9 +1111,8 @@ async def _auto_download_price_ranges(context, page, download_dir: Path) -> Path
     await select_loc.select_option(value=match["v"])
     await _auto_pause(0.2)
 
-    async with erp_page.expect_download(timeout=30000) as download_info:
-        await rframe.locator("a:has-text('Exportar'), button:has-text('Exportar'), input[value='Exportar']").last.click(force=True)
-    download = await download_info.value
+    _auto_log("Haciendo click en Exportar Lista de Precios")
+    download = await _auto_wait_price_export_download(erp_page, rframe)
     file_name = download.suggested_filename or "lista_precios.xlsx"
     target = Path(download_dir) / file_name
     await download.save_as(str(target))
