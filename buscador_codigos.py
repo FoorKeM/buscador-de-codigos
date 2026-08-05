@@ -102,7 +102,7 @@ _RE_NON_ALNUM = re.compile(r"[^A-Z0-9]")    # elimina no-alfanuméricos (normali
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
 TMP_DIR      = Path(tempfile.gettempdir())  # directorio temporal del sistema
-APP_VERSION  = "v109"
+APP_VERSION  = "v110"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 GITHUB_REPO  = "FoorKeM/buscador-de-codigos"
@@ -2330,7 +2330,7 @@ class SearchView(ttk.Frame):
         self.empresas_choices = ["— Cualquiera —"] + [f"{v} (Id. {k})" for k, v in sorted(self.empresas.items(), key=lambda x: x[1].lower())]
         self.cbo_emp = ttk.Combobox(row3, textvariable=self.var_emp, values=self.empresas_choices, width=40, state="readonly")
         self.cbo_emp.pack(side="left", padx=8)
-        self.cbo_emp.set(self.prefs.get("empresa_display", "— Cualquiera —"))
+        self.cbo_emp.set("— Cualquiera —")
         self.cbo_emp.bind("<Key>", self.on_emp_key)
 
         btns = ttk.Frame(row3)
@@ -2644,8 +2644,7 @@ class SearchView(ttk.Frame):
     def on_clear(self):
         """Limpia el cuadro de búsqueda, los resultados y restaura el estado inicial."""
         self.txt_query.delete("1.0", "end")
-        prefer = self.prefs.get("empresa_display", "— Cualquiera —")
-        self.cbo_emp.set(prefer if prefer in self.cbo_emp["values"] else "— Cualquiera —")
+        self.cbo_emp.set("— Cualquiera —")
         for x in self.tree.get_children(): self.tree.delete(x)
         self.var_status.set(self.status_db_text)
         self.last_results = pd.DataFrame()
