@@ -102,7 +102,9 @@ _RE_NON_ALNUM = re.compile(r"[^A-Z0-9]")    # elimina no-alfanuméricos (normali
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
 TMP_DIR      = Path(tempfile.gettempdir())  # directorio temporal del sistema
-APP_VERSION  = "v106"
+APP_VERSION  = "v107"
+DEFAULT_WINDOW_SIZE = (1120, 720)
+MIN_WINDOW_SIZE = (960, 620)
 GITHUB_REPO  = "FoorKeM/buscador-de-codigos"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000
@@ -601,6 +603,39 @@ def format_auto_last_load_date(value: str) -> str:
         return dt.strftime("%d-%m-%Y %H:%M")
     except Exception:
         return str(value or "").strip()
+
+def _parse_geometry_size(geometry: str) -> Optional[tuple]:
+    m = re.match(r"^(\d+)x(\d+)([+-]\d+[+-]\d+)?$", str(geometry or ""))
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2)), m.group(3) or ""
+
+def _reasonable_root_geometry(root, saved_geometry: str = "") -> str:
+    default_w, default_h = DEFAULT_WINDOW_SIZE
+    min_w, min_h = MIN_WINDOW_SIZE
+    try:
+        screen_w = root.winfo_screenwidth()
+        screen_h = root.winfo_screenheight()
+    except Exception:
+        screen_w, screen_h = 1366, 768
+
+    max_w = max(min_w, min(1280, int(screen_w * 0.82)))
+    max_h = max(min_h, min(820, int(screen_h * 0.82)))
+    w, h, pos = default_w, default_h, ""
+
+    parsed = _parse_geometry_size(saved_geometry)
+    if parsed:
+        saved_w, saved_h, saved_pos = parsed
+        w = min(max(saved_w, min_w), max_w)
+        h = min(max(saved_h, min_h), max_h)
+        if saved_w <= max_w and saved_h <= max_h:
+            pos = saved_pos
+
+    if not pos:
+        x = max(0, (screen_w - w) // 2)
+        y = max(0, (screen_h - h) // 2)
+        pos = f"+{x}+{y}"
+    return f"{w}x{h}{pos}"
 
 class AutoDownloadError(Exception):
     pass
@@ -3225,10 +3260,10 @@ class RootApp(tk.Tk):
         prefs = load_prefs()
         geom = prefs.get("geometry")
         try:
-            self.geometry(geom if geom else "1180x780")
+            self.geometry(_reasonable_root_geometry(self, geom))
         except Exception:
-            self.geometry("1180x780")
-        self.minsize(1020, 660)
+            self.geometry(f"{DEFAULT_WINDOW_SIZE[0]}x{DEFAULT_WINDOW_SIZE[1]}")
+        self.minsize(*MIN_WINDOW_SIZE)
 
         # Ruta global del EXCEL "Listado de artículos" que usarán los módulos
         self.listado_path: Optional[Path] = None
