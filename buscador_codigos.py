@@ -102,7 +102,7 @@ _RE_NON_ALNUM = re.compile(r"[^A-Z0-9]")    # elimina no-alfanuméricos (normali
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
 TMP_DIR      = Path(tempfile.gettempdir())  # directorio temporal del sistema
-APP_VERSION  = "v107"
+APP_VERSION  = "v108"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 GITHUB_REPO  = "FoorKeM/buscador-de-codigos"
@@ -2309,7 +2309,7 @@ class SearchView(ttk.Frame):
         self.txt_query.bind("<Button-2>", self.show_query_context_menu)
 
         opts = ttk.Frame(content); opts.grid(row=2, column=0, sticky="w", pady=(6,0))
-        self.exact = tk.BooleanVar(value=bool(self.prefs.get("exact", True)))
+        self.exact = tk.BooleanVar(value=True)
         self.by_barras = tk.BooleanVar(value=bool(self.prefs.get("by_barras", False)))
         self.by_tivendo = tk.BooleanVar(value=False)
         ttk.Checkbutton(opts, text="Coincidencia exacta (código)", variable=self.exact).pack(side="left")
