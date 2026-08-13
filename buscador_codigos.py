@@ -97,7 +97,7 @@ _RE_NON_ALNUM = re.compile(r"[^A-Z0-9]")    # elimina no-alfanuméricos (normali
 
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v114"
+APP_VERSION  = "v115"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -2129,9 +2129,7 @@ class SearchView(ttk.Frame):
         go_home_cb,
         initial_db_path: Optional[Path],
         packs_path: Optional[Path] = None,
-        packs_index: Optional[dict] = None,
         ranges_path: Optional[Path] = None,
-        ranges_index: Optional[dict] = None,
     ):
         super().__init__(master)
         self.master.title("Buscador de Códigos — MERCADO HOUSE (v102)")
@@ -2141,19 +2139,7 @@ class SearchView(ttk.Frame):
         self.db_path: Optional[Path] = None  # inicializado explícitamente
 
         self.packs_path = packs_path
-        self.packs_index = packs_index or {}
         self.ranges_path = ranges_path
-        self.ranges_index = ranges_index or {}
-
-        # Indice inverso: codigo del PACK (no del articulo) -> sus articulos
-        # componentes. self.packs_index esta indexado por articulo, asi que
-        # aca lo invertimos para poder buscar directamente por codigo de pack.
-        self.packs_by_code_index: Dict[str, List[dict]] = {}
-        for records in self.packs_index.values():
-            for rec in records:
-                key = _norm_pack_code(rec.get("pack_codigo", ""))
-                if key:
-                    self.packs_by_code_index.setdefault(key, []).append(rec)
 
         # Carga de datos
         try:
@@ -2545,6 +2531,38 @@ class SearchView(ttk.Frame):
             return ""
         name = self.empresas.get(int(num), "")
         return f"{name} (Id. {num})"
+
+    @property
+    def packs_index(self) -> dict:
+        """Siempre lee el valor actual desde RootApp (self.master), en vez de
+        una copia tomada al construir esta vista. La carga de packs/rangos
+        de la ultima carga automatica termina en un hilo de fondo despues de
+        que la ventana ya esta abierta; si esta vista guardara una copia fija
+        tomada al momento de crearse, se quedaria con el diccionario vacio
+        para siempre aunque los packs terminen de cargar mas tarde."""
+        return getattr(self.master, "packs_index", None) or {}
+
+    @property
+    def ranges_index(self) -> dict:
+        return getattr(self.master, "ranges_index", None) or {}
+
+    @property
+    def packs_by_code_index(self) -> Dict[str, List[dict]]:
+        """Indice inverso: identificador del PACK (su codigo interno O su
+        codigo de barra) -> sus articulos componentes. self.packs_index esta
+        indexado por articulo, asi que aca lo invertimos para poder buscar
+        directamente por cualquiera de los dos identificadores del pack (por
+        ejemplo, al escanear el codigo de barra impreso en el pack). Se
+        recalcula en cada acceso para reflejar siempre el packs_index actual
+        (ver comentario de esa property)."""
+        index: Dict[str, List[dict]] = {}
+        for records in self.packs_index.values():
+            for rec in records:
+                for field in ("pack_codigo", "pack_barra"):
+                    key = _norm_pack_code(rec.get(field, ""))
+                    if key:
+                        index.setdefault(key, []).append(rec)
+        return index
 
     def _pack_records_for_code(self, codigo: str):
         if not self.packs_index:
@@ -3682,9 +3700,7 @@ class RootApp(tk.Tk):
             go_home_cb=self._show_start,
             initial_db_path=db_path,
             packs_path=self.packs_path,
-            packs_index=self.packs_index,
             ranges_path=self.ranges_path,
-            ranges_index=self.ranges_index,
         )
 
 def is_ident_header(x: str) -> bool:
