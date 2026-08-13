@@ -97,7 +97,7 @@ _RE_NON_ALNUM = re.compile(r"[^A-Z0-9]")    # elimina no-alfanuméricos (normali
 
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v116"
+APP_VERSION  = "v117"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -2132,7 +2132,7 @@ class SearchView(ttk.Frame):
         ranges_path: Optional[Path] = None,
     ):
         super().__init__(master)
-        self.master.title("Buscador de Códigos — MERCADO HOUSE (v102)")
+        self.master.title(f"Buscador de Códigos — MERCADO HOUSE ({APP_VERSION})")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
         self.prefs = load_prefs()
@@ -2176,9 +2176,11 @@ class SearchView(ttk.Frame):
         self.exact = tk.BooleanVar(value=True)
         self.by_barras = tk.BooleanVar(value=False)
         self.by_tivendo = tk.BooleanVar(value=False)
+        self.by_packs = tk.BooleanVar(value=True)
         ttk.Checkbutton(opts, text="Coincidencia exacta (código)", variable=self.exact).pack(side="left")
         ttk.Checkbutton(opts, text="Buscar por códigos de barra", variable=self.by_barras).pack(side="left", padx=(12,0))
         ttk.Checkbutton(opts, text="Buscar por código Tivendo", variable=self.by_tivendo).pack(side="left", padx=(12,0))
+        ttk.Checkbutton(opts, text="Buscar código de pack", variable=self.by_packs).pack(side="left", padx=(12,0))
 
         row3 = ttk.Frame(content); row3.grid(row=3, column=0, sticky="w", pady=(8,0))
         ttk.Label(row3, text="Empresa:").pack(side="left")
@@ -2593,14 +2595,18 @@ class SearchView(ttk.Frame):
             mask = mask | (df["_identificador_ws"].str.lower() == code_ws_lc)
         return df[mask]
 
-    def _score_results_with_pack_fallback(self, df, code, exact, by_barras, by_tivendo, tok_index):
+    def _score_results_with_pack_fallback(self, df, code, exact, by_barras, by_tivendo, tok_index, by_packs=True):
         """Busca `code` en el catalogo. Si no aparece pero coincide con el
         codigo de un PACK, busca en su lugar los articulos que lo componen
-        (los codigos de pack no existen como filas del catalogo)."""
+        (los codigos de pack no existen como filas del catalogo). Si
+        `by_packs` es False, se omite ese paso (queda igual que antes de
+        que existiera la busqueda por pack)."""
         code_ws = _ws_re.sub(" ", str(code)).strip()
         code_norm = normalize_code_token(code_ws)
         sub = _score_results(df, code, code_ws, code_norm, exact, by_barras, by_tivendo, tok_index)
         if not sub.empty:
+            return sub, False
+        if not by_packs:
             return sub, False
 
         component_codes = self._pack_component_codes(code)
@@ -2707,13 +2713,14 @@ class SearchView(ttk.Frame):
         exact     = self.exact.get()
         by_barras = self.by_barras.get()
         by_tivendo = self.by_tivendo.get()
+        by_packs  = self.by_packs.get()
         tok_index = _LOAD_DATA_CACHE.get("index")
 
         if len(codes) == 1:
             q      = codes[0]
             q_ws   = _ws_re.sub(" ", q).strip()
             q_norm = normalize_code_token(q_ws)
-            out, is_pack = self._score_results_with_pack_fallback(df, q, exact, by_barras, by_tivendo, tok_index)
+            out, is_pack = self._score_results_with_pack_fallback(df, q, exact, by_barras, by_tivendo, tok_index, by_packs)
             if out.empty:
                 if not by_barras and _looks_like_barcode(q):
                     hint = "  Parece codigo de barra: marca 'Buscar por codigos de barra' y vuelve a buscar."
@@ -2742,7 +2749,7 @@ class SearchView(ttk.Frame):
             code_ws = _ws_re.sub(" ", str(code)).strip()
             if not code_ws:
                 continue
-            sub, is_pack = self._score_results_with_pack_fallback(df, code, exact, by_barras, by_tivendo, tok_index)
+            sub, is_pack = self._score_results_with_pack_fallback(df, code, exact, by_barras, by_tivendo, tok_index, by_packs)
             if sub.empty:
                 nf_row = _make_nf_row(code, i)
                 nf_row["__pos"] = i
@@ -3778,7 +3785,7 @@ def clean_price(s: str) -> str:
 class TivendoWindow(ttk.Frame):
     def __init__(self, master, listado_path: Optional[Path] = None, go_home_cb=None):
         super().__init__(master)
-        self.master.title("Tivendo - Cambios masivos de precios (v102)")
+        self.master.title(f"Tivendo - Cambios masivos de precios ({APP_VERSION})")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
 
@@ -4390,7 +4397,7 @@ def buscar_siguiente_codigo_disponible(codigo_actual: str, codigos_catalogo_set,
 class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
     def __init__(self, master, catalogo_path: Optional[Path] = None, go_home_cb=None):
         super().__init__(master)
-        self.master.title("Tivendo - Ingreso Masivo de Artículos (v102)")
+        self.master.title(f"Tivendo - Ingreso Masivo de Artículos ({APP_VERSION})")
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
 
