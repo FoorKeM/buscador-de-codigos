@@ -71,8 +71,6 @@ import re
 import os
 import shutil
 import threading
-import tempfile
-import atexit
 import asyncio
 import unicodedata
 import difflib
@@ -99,8 +97,7 @@ _RE_NON_ALNUM = re.compile(r"[^A-Z0-9]")    # elimina no-alfanuméricos (normali
 
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-TMP_DIR      = Path(tempfile.gettempdir())  # directorio temporal del sistema
-APP_VERSION  = "v113"
+APP_VERSION  = "v114"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -326,6 +323,12 @@ except Exception:
     pass
 CACHE_DB_PATH = CACHE_DIR / "base_codigos_cache.pkl"
 CACHE_DB_META = CACHE_DIR / "base_codigos_cache_meta.json"
+BASE_DB_CACHE_DIR = CACHE_DIR / "bases_generadas"
+BASE_DB_CACHE_META = CACHE_DIR / "bases_generadas_meta.json"
+try:
+    BASE_DB_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
 AUTO_DOWNLOAD_DIR = APP_DATA_DIR / "auto_downloads"
 AUTO_DOWNLOAD_STAGING_DIR = APP_DATA_DIR / "auto_downloads_tmp"
 AUTO_CREDENTIALS_PATH = APP_DATA_DIR / "credenciales_auto.json"
@@ -340,18 +343,60 @@ AUTO_SYNC_SUCURSALES = {
 }
 AUTO_SYNC_DEFAULT_SUCURSAL = "LIBERTADOR"
 
-# Limpieza automática de archivos temporales de BASE DE DATOS al salir
-def _cleanup_tmp_bases():
+def _base_db_cache_path(listado_path: Path) -> Path:
+    """Ruta fija (persistente entre aperturas) de la BASE DE DATOS generada
+    para este LISTADO DE ARTICULOS."""
+    return BASE_DB_CACHE_DIR / f"MH_TMP_BASE_{listado_path.stem}.xlsx"
+
+
+def _load_base_db_cache_meta() -> dict:
     try:
-        for f in TMP_DIR.glob("MH_TMP_BASE_*.xlsx"):
-            try:
-                f.unlink()
-            except Exception:
-                pass
+        return json.loads(BASE_DB_CACHE_META.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_base_db_cache_meta(meta: dict) -> None:
+    try:
+        BASE_DB_CACHE_META.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
     except Exception:
         pass
 
-atexit.register(_cleanup_tmp_bases)
+
+def _find_fresh_base_db_cache(listado_path: Path) -> Optional[Path]:
+    """Devuelve la BASE DE DATOS ya generada para este listado si sigue
+    vigente (el listado no cambio de tamano/fecha desde que se generó);
+    si el listado se reemplazo por una version mas nueva, devuelve None
+    para forzar una regeneracion."""
+    candidate = _base_db_cache_path(listado_path)
+    if not candidate.exists():
+        return None
+    try:
+        src_mtime = listado_path.stat().st_mtime
+    except Exception:
+        return None
+    entry = _load_base_db_cache_meta().get(str(listado_path.resolve()))
+    if not entry or entry.get("src_mtime") != src_mtime:
+        return None
+    try:
+        cols = pd.read_excel(candidate, sheet_name="BASE DE DATOS", nrows=0).columns
+        if "Identificador" not in cols:
+            return None
+    except Exception:
+        return None
+    return candidate
+
+
+def _remember_base_db_cache(listado_path: Path) -> None:
+    try:
+        src_mtime = listado_path.stat().st_mtime
+    except Exception:
+        return
+    meta = _load_base_db_cache_meta()
+    meta[str(listado_path.resolve())] = {"src_mtime": src_mtime}
+    _save_base_db_cache_meta(meta)
+
+
 EMP_PATH = HERE / "empresas.json"
 JOIN_SEP = "\n"
 
@@ -2100,6 +2145,16 @@ class SearchView(ttk.Frame):
         self.ranges_path = ranges_path
         self.ranges_index = ranges_index or {}
 
+        # Indice inverso: codigo del PACK (no del articulo) -> sus articulos
+        # componentes. self.packs_index esta indexado por articulo, asi que
+        # aca lo invertimos para poder buscar directamente por codigo de pack.
+        self.packs_by_code_index: Dict[str, List[dict]] = {}
+        for records in self.packs_index.values():
+            for rec in records:
+                key = _norm_pack_code(rec.get("pack_codigo", ""))
+                if key:
+                    self.packs_by_code_index.setdefault(key, []).append(rec)
+
         # Carga de datos
         try:
             self.df, self.empresas = load_data(initial_db_path)
@@ -2496,6 +2551,52 @@ class SearchView(ttk.Frame):
             return []
         return self.packs_index.get(_norm_pack_code(codigo), [])
 
+    def _pack_component_codes(self, codigo: str):
+        """Si `codigo` es el codigo de un PACK (no de un articulo suelto),
+        devuelve los codigos de los articulos que lo componen (sin
+        duplicados, conservando el orden)."""
+        if not self.packs_by_code_index:
+            return []
+        records = self.packs_by_code_index.get(_norm_pack_code(codigo), [])
+        codes = [r["articulo_codigo"] for r in records if str(r.get("articulo_codigo", "")).strip()]
+        return list(dict.fromkeys(codes))
+
+    def _catalog_rows_for_exact_code(self, df, codigo: str):
+        """Filas del catalogo cuyo codigo O identificador (Tivendo) sea
+        exactamente `codigo`. Se usa para resolver los articulos que
+        componen un pack, sin depender de los checkbox de busqueda (exacto/
+        por codigo Tivendo/por codigo de barra) que aplican a la busqueda
+        que escribio el usuario, no a esta resolucion interna."""
+        code_ws_lc = _ws_re.sub(" ", str(codigo)).strip().lower()
+        if not code_ws_lc:
+            return df.iloc[0:0]
+        mask = (df["_codigo_ws"].str.lower() == code_ws_lc)
+        if "_identificador_ws" in df.columns:
+            mask = mask | (df["_identificador_ws"].str.lower() == code_ws_lc)
+        return df[mask]
+
+    def _score_results_with_pack_fallback(self, df, code, exact, by_barras, by_tivendo, tok_index):
+        """Busca `code` en el catalogo. Si no aparece pero coincide con el
+        codigo de un PACK, busca en su lugar los articulos que lo componen
+        (los codigos de pack no existen como filas del catalogo)."""
+        code_ws = _ws_re.sub(" ", str(code)).strip()
+        code_norm = normalize_code_token(code_ws)
+        sub = _score_results(df, code, code_ws, code_norm, exact, by_barras, by_tivendo, tok_index)
+        if not sub.empty:
+            return sub, False
+
+        component_codes = self._pack_component_codes(code)
+        if not component_codes:
+            return sub, False
+
+        frames = [self._catalog_rows_for_exact_code(df, c) for c in component_codes]
+        frames = [f for f in frames if not f.empty]
+        if not frames:
+            return sub, False
+        result = pd.concat(frames, ignore_index=True).copy()
+        result["__score"] = 100
+        return result, True
+
     def _pack_display_for_code(self, codigo: str) -> str:
         records = self._pack_records_for_code(codigo)
         return f"Si ({len(records)})" if records else "No"
@@ -2594,7 +2695,7 @@ class SearchView(ttk.Frame):
             q      = codes[0]
             q_ws   = _ws_re.sub(" ", q).strip()
             q_norm = normalize_code_token(q_ws)
-            out    = _score_results(df, q, q_ws, q_norm, exact, by_barras, by_tivendo, tok_index)
+            out, is_pack = self._score_results_with_pack_fallback(df, q, exact, by_barras, by_tivendo, tok_index)
             if out.empty:
                 if not by_barras and _looks_like_barcode(q):
                     hint = "  Parece codigo de barra: marca 'Buscar por codigos de barra' y vuelve a buscar."
@@ -2611,6 +2712,11 @@ class SearchView(ttk.Frame):
             out = out.drop(columns=["__score"])
             out["__input"] = q
             self.populate(out.head(MAX_RESULTS), emp_id)
+            if is_pack:
+                self.var_status.set(
+                    self.var_status.get()
+                    + f" | '{q}' es un código de PACK: se muestran sus {len(out)} artículo(s) componentes."
+                )
             return
 
         frames, nf = [], 0
@@ -2618,8 +2724,7 @@ class SearchView(ttk.Frame):
             code_ws = _ws_re.sub(" ", str(code)).strip()
             if not code_ws:
                 continue
-            code_norm = normalize_code_token(code_ws)
-            sub = _score_results(df, code, code_ws, code_norm, exact, by_barras, by_tivendo, tok_index)
+            sub, is_pack = self._score_results_with_pack_fallback(df, code, exact, by_barras, by_tivendo, tok_index)
             if sub.empty:
                 nf_row = _make_nf_row(code, i)
                 nf_row["__pos"] = i
@@ -2991,6 +3096,7 @@ class AutoBuildDBWindow(tk.Toplevel):
         super().__init__(master)
         self.title("Creando base de datos…")
         self.resizable(False, False)
+        self.transient(master)
         self.listado_path = listado_path
         self.on_done = on_done  # callback Path|None
 
@@ -3021,6 +3127,15 @@ class AutoBuildDBWindow(tk.Toplevel):
         self.update_idletasks()
         self.minsize(self.winfo_width(), self.winfo_height())
 
+        # Centrar sobre la ventana principal en vez de dejar la posición
+        # por defecto (arriba a la izquierda, asimétrica respecto al programa).
+        try:
+            x = master.winfo_rootx() + max(0, (master.winfo_width() - self.winfo_width()) // 2)
+            y = master.winfo_rooty() + max(0, (master.winfo_height() - self.winfo_height()) // 2)
+            self.geometry(f"+{x}+{y}")
+        except Exception:
+            pass
+
         self._start_work()
 
     def _set_progress(self, value: int, text: str | None = None):
@@ -3044,13 +3159,16 @@ class AutoBuildDBWindow(tk.Toplevel):
                 empresas = load_empresas()
                 lista_df = empresas_df_for_excel(empresas)
 
-                # Nombre de salida en carpeta temporal del sistema
-                out_file = TMP_DIR / f"MH_TMP_BASE_{self.listado_path.stem}.xlsx"
+                # Ubicacion persistente (no se borra al cerrar el programa)
+                # para poder reutilizarla en la proxima apertura si el
+                # listado de origen no cambio.
+                out_file = _base_db_cache_path(self.listado_path)
 
                 self.after(0, lambda: self._set_progress(90, "Escribiendo archivo Excel…"))
                 with pd.ExcelWriter(out_file, engine="openpyxl") as writer:
                     out_df.to_excel(writer, sheet_name="BASE DE DATOS", index=False)
                     lista_df.to_excel(writer, sheet_name="LISTA", index=False)
+                _remember_base_db_cache(self.listado_path)
 
                 self.after(0, lambda: self._finish(True, out_file))
             except Exception as e:
@@ -3505,29 +3623,16 @@ class RootApp(tk.Tk):
     def _choose_db_flow(self):
         """Crear automáticamente la BASE DE DATOS desde el listado y abrir el buscador.
 
-        Optimización: si ya existe en la carpeta temporal un archivo
-        MH_TMP_BASE_<nombre_listado>.xlsx generado previamente en esta sesión,
-        se reutiliza en lugar de volver a crearlo.
+        Optimización: la BASE DE DATOS generada queda cacheada de forma
+        persistente (no solo durante esta sesión). Si el LISTADO DE
+        ARTICULOS no cambió desde la última vez que se generó, se reutiliza
+        en vez de volver a crearla; si cambió, se regenera automáticamente.
         """
         if not self._require_listado():
             return
 
-        # Intentar reutilizar una base temporal ya generada para este LISTADO
-        try:
-            candidate = TMP_DIR / f"MH_TMP_BASE_{self.listado_path.stem}.xlsx"
-        except Exception:
-            candidate = None
-
-        if candidate is not None and candidate.exists():
-            try:
-                cols = pd.read_excel(candidate, sheet_name="BASE DE DATOS", nrows=0).columns
-                if "Identificador" not in cols:
-                    candidate.unlink()
-            except Exception:
-                pass
-
-        if candidate is not None and candidate.exists():
-            # Si ya existe, abrimos directamente el buscador con esa BD
+        candidate = _find_fresh_base_db_cache(self.listado_path)
+        if candidate is not None:
             try:
                 self._show_search(candidate)
                 return
