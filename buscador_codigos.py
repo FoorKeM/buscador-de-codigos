@@ -97,7 +97,7 @@ _RE_NON_ALNUM = re.compile(r"[^A-Z0-9]")    # elimina no-alfanuméricos (normali
 
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v115"
+APP_VERSION  = "v116"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -3250,11 +3250,11 @@ class RootApp(tk.Tk):
         self.destroy()
 
     def _restore_last_auto_load(self):
-        """Reanuda la última carga automática sin bloquear el arranque.
-
-        Solo hace comprobaciones baratas (leer JSON, stat de archivos) en el
-        hilo principal. La lectura pesada de los Excel/HTML de packs y precios
-        se hace en un hilo aparte para que la ventana se muestre de inmediato.
+        """Restaura las rutas de la última carga automática sin bloquear el
+        arranque: solo hace comprobaciones baratas (leer JSON, comprobar que
+        los archivos existan). Los datos pesados de packs/precios NO se leen
+        aca — se cargan mas adelante, recien cuando hacen falta de verdad
+        (al apretar 'Buscar Código'), ver _ensure_packs_ranges_loaded.
         """
         data = load_auto_last_load()
         try:
@@ -3274,36 +3274,73 @@ class RootApp(tk.Tk):
             self.packs_path = packs
             self.ranges_path = precios
             self.auto_last_load_text = format_auto_last_load_date(data.get("downloaded_at", ""))
-
-            threading.Thread(
-                target=self._restore_last_auto_load_data_worker,
-                args=(packs, precios),
-                daemon=True,
-            ).start()
         except Exception as exc:
             _auto_log(f"No se pudo restaurar última carga automática: {exc}")
 
-    def _restore_last_auto_load_data_worker(self, packs: Path, precios: Path):
-        try:
-            packs_df, packs_index = load_packs_data(packs)
-            ranges_df, ranges_index = load_price_ranges_data(precios)
-        except Exception as exc:
-            _auto_log(f"No se pudo restaurar última carga automática (datos): {exc}")
+    def _ensure_packs_ranges_loaded(self, on_ready):
+        """Garantiza que packs/precios estén cargados en memoria antes de
+        abrir el buscador, cargándolos junto con el LISTADO DE ARTICULOS en
+        ese mismo momento (no automáticamente al abrir el programa). Si ya
+        están cargados (o no hay ningún archivo asociado), llama a
+        on_ready() de inmediato; si hace falta leerlos, lo hace en un hilo
+        de fondo (con una ventanita de progreso) y solo entonces continúa."""
+        needs_packs = self.packs_path is not None and not self.packs_index
+        needs_ranges = self.ranges_path is not None and not self.ranges_index
+        if not needs_packs and not needs_ranges:
+            on_ready()
             return
 
-        def apply():
-            self.packs_df = packs_df
-            self.packs_index = packs_index
-            self.ranges_df = ranges_df
-            self.ranges_index = ranges_index
-            if hasattr(self, "start_view") and self.start_view is not None:
+        progress = tk.Toplevel(self)
+        progress.title("Cargando datos")
+        progress.resizable(False, False)
+        progress.transient(self)
+        progress.grab_set()
+        frm = ttk.Frame(progress, padding=16)
+        frm.pack(fill="both", expand=True)
+        ttk.Label(frm, text="Cargando maestro de packs y lista de precios…").pack(anchor="w")
+        pb = ttk.Progressbar(frm, mode="indeterminate", length=320)
+        pb.pack(fill="x", pady=(10, 0))
+        pb.start(10)
+        try:
+            progress.update_idletasks()
+            x = self.winfo_rootx() + max(0, (self.winfo_width() - progress.winfo_width()) // 2)
+            y = self.winfo_rooty() + max(0, (self.winfo_height() - progress.winfo_height()) // 2)
+            progress.geometry(f"+{x}+{y}")
+        except Exception:
+            pass
+
+        def work():
+            packs_result = ranges_result = None
+            error = None
+            try:
+                if needs_packs:
+                    packs_result = load_packs_data(self.packs_path)
+                if needs_ranges:
+                    ranges_result = load_price_ranges_data(self.ranges_path)
+            except Exception as exc:
+                error = exc
+
+            def apply():
                 try:
-                    self.start_view.set_packs_cargado(True)
-                    self.start_view.set_ranges_cargado(True)
+                    progress.destroy()
                 except Exception:
                     pass
+                if error is not None:
+                    messagebox.showerror(
+                        "Error al cargar packs/precios",
+                        f"No se pudieron cargar los archivos asociados.\n\nDetalle: {error}",
+                    )
+                    on_ready()
+                    return
+                if packs_result is not None:
+                    self.packs_df, self.packs_index = packs_result
+                if ranges_result is not None:
+                    self.ranges_df, self.ranges_index = ranges_result
+                on_ready()
 
-        self.after(0, apply)
+            self.after(0, apply)
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _choose_listado_inicial(self):
         """Pide el Excel de LISTADO DE ARTÍCULOS y actualiza el estado de los botones."""
@@ -3623,8 +3660,10 @@ class RootApp(tk.Tk):
             on_load_ranges=self._choose_ranges_inicial,
             on_auto_load=self._auto_load_articulos_packs,
             listado_cargado=self.listado_path is not None,
-            packs_cargado=bool(self.packs_index),
-            ranges_cargado=bool(self.ranges_index),
+            # Refleja si hay un archivo asociado (se cargará al abrir el
+            # buscador), no si ya está leído en memoria en este instante.
+            packs_cargado=bool(self.packs_path),
+            ranges_cargado=bool(self.ranges_path),
             auto_last_load_text=self.auto_last_load_text,
         )
 
@@ -3645,27 +3684,33 @@ class RootApp(tk.Tk):
         persistente (no solo durante esta sesión). Si el LISTADO DE
         ARTICULOS no cambió desde la última vez que se generó, se reutiliza
         en vez de volver a crearla; si cambió, se regenera automáticamente.
+
+        Los packs/precios de la última carga automática (si hay) se cargan
+        junto con el listado en este mismo paso, no antes.
         """
         if not self._require_listado():
             return
 
-        candidate = _find_fresh_base_db_cache(self.listado_path)
-        if candidate is not None:
-            try:
-                self._show_search(candidate)
-                return
-            except Exception:
-                # Si algo falla, seguimos con el flujo estándar de creación
-                pass
+        def _open_search():
+            candidate = _find_fresh_base_db_cache(self.listado_path)
+            if candidate is not None:
+                try:
+                    self._show_search(candidate)
+                    return
+                except Exception:
+                    # Si algo falla, seguimos con el flujo estándar de creación
+                    pass
 
-        def _done(db_path: Optional[Path]):
-            # Callback que se ejecuta cuando termina la creación
-            if db_path is None:
-                return
-            self._show_search(db_path)
+            def _done(db_path: Optional[Path]):
+                # Callback que se ejecuta cuando termina la creación
+                if db_path is None:
+                    return
+                self._show_search(db_path)
 
-        # Abre una ventanita con barra de progreso y lanza el proceso en segundo plano
-        AutoBuildDBWindow(self, self.listado_path, _done)
+            # Abre una ventanita con barra de progreso y lanza el proceso en segundo plano
+            AutoBuildDBWindow(self, self.listado_path, _done)
+
+        self._ensure_packs_ranges_loaded(_open_search)
 
     def _manage_prov_flow(self):
         self._clear()
