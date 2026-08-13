@@ -69,7 +69,6 @@ import sys
 import json
 import re
 import os
-import subprocess
 import shutil
 import threading
 import tempfile
@@ -77,7 +76,6 @@ import atexit
 import asyncio
 import unicodedata
 import difflib
-import urllib.request
 import numpy as np
 from html.parser import HTMLParser
 from datetime import datetime
@@ -102,12 +100,9 @@ _RE_NON_ALNUM = re.compile(r"[^A-Z0-9]")    # elimina no-alfanuméricos (normali
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
 TMP_DIR      = Path(tempfile.gettempdir())  # directorio temporal del sistema
-APP_VERSION  = "v110"
+APP_VERSION  = "v113"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
-GITHUB_REPO  = "FoorKeM/buscador-de-codigos"
-LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000
 
 # Cache simple para evitar recargar la BASE DE DATOS desde disco en la misma sesión
 _LOAD_DATA_CACHE = {
@@ -116,176 +111,6 @@ _LOAD_DATA_CACHE = {
     'index': None,  # type: Optional[Dict[str, List[int]]]  índice invertido de tokens
 }
 
-
-def _version_tuple(version: str):
-    nums = [int(x) for x in re.findall(r"\d+", str(version or ""))]
-    return tuple(nums or [0])
-
-
-def _is_frozen_app() -> bool:
-    return bool(getattr(sys, "frozen", False))
-
-
-def _get_latest_release_info():
-    req = urllib.request.Request(
-        LATEST_RELEASE_API,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "User-Agent": f"BuscadorCodigos/{APP_VERSION}",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=12) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-
-    tag = str(data.get("tag_name", "")).strip()
-    exe_asset = None
-    for asset in data.get("assets", []):
-        name = str(asset.get("name", ""))
-        if name.lower().endswith(".exe"):
-            exe_asset = asset
-            break
-    if not tag or exe_asset is None:
-        return None
-    return {
-        "tag": tag,
-        "name": exe_asset.get("name") or f"BuscadorCodigos-{tag}.exe",
-        "url": exe_asset.get("browser_download_url"),
-        "release_url": data.get("html_url"),
-        "size": int(exe_asset.get("size") or 0),
-    }
-
-
-def _validate_downloaded_exe(path: Path, expected_size: int = 0):
-    actual_size = path.stat().st_size if path.exists() else 0
-    if expected_size and actual_size != expected_size:
-        raise RuntimeError(
-            f"La descarga quedo incompleta ({actual_size:,} de {expected_size:,} bytes)."
-        )
-    if actual_size < 10 * 1024 * 1024:
-        raise RuntimeError(f"La descarga no parece ser el ejecutable completo ({actual_size:,} bytes).")
-    with open(path, "rb") as fh:
-        if fh.read(2) != b"MZ":
-            raise RuntimeError("El archivo descargado no parece ser un ejecutable Windows valido.")
-
-
-def _download_update_asset(url: str, filename: str, expected_size: int = 0) -> Path:
-    update_dir = Path(tempfile.gettempdir()) / "BuscadorCodigosUpdate"
-    update_dir.mkdir(parents=True, exist_ok=True)
-    dest = update_dir / filename
-    tmp_dest = dest.with_suffix(dest.suffix + ".download")
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": f"BuscadorCodigos/{APP_VERSION}"},
-    )
-    bytes_written = 0
-    with urllib.request.urlopen(req, timeout=60) as resp, open(tmp_dest, "wb") as fh:
-        while True:
-            chunk = resp.read(1024 * 1024)
-            if not chunk:
-                break
-            fh.write(chunk)
-            bytes_written += len(chunk)
-    if expected_size and bytes_written != expected_size:
-        try:
-            tmp_dest.unlink()
-        except Exception:
-            pass
-        raise RuntimeError(
-            f"La descarga quedo incompleta ({bytes_written:,} de {expected_size:,} bytes)."
-        )
-    _validate_downloaded_exe(tmp_dest, expected_size)
-    if dest.exists():
-        try:
-            dest.unlink()
-        except Exception:
-            pass
-    tmp_dest.replace(dest)
-    return dest
-
-
-def _install_downloaded_update(current_exe: Path, new_exe: Path, version_tag: str = "") -> Path:
-    install_dir = current_exe.parent
-    installed_exe = install_dir / new_exe.name
-    if installed_exe.resolve() == current_exe.resolve():
-        installed_exe = install_dir / f"{current_exe.stem}-{version_tag or 'nuevo'}{current_exe.suffix}"
-
-    shutil.copy2(new_exe, installed_exe)
-    _validate_downloaded_exe(installed_exe, new_exe.stat().st_size)
-
-    update_dir = Path(tempfile.gettempdir()) / "BuscadorCodigosUpdate"
-    update_dir.mkdir(parents=True, exist_ok=True)
-    marker_path = update_dir / "successful_update_marker.json"
-    marker_path.write_text(
-        json.dumps(
-            {
-                "old_exe": str(current_exe),
-                "installed_exe": str(installed_exe),
-                "version": version_tag,
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-    try:
-        new_exe.unlink()
-    except Exception:
-        pass
-    return installed_exe
-
-
-def _write_launch_new_version_script(installed_exe: Path) -> Path:
-    update_dir = Path(tempfile.gettempdir()) / "BuscadorCodigosUpdate"
-    update_dir.mkdir(parents=True, exist_ok=True)
-    script_path = update_dir / "abrir_nueva_version.bat"
-    script = f"""@echo off
-setlocal
-set "NEW_EXE={installed_exe}"
-timeout /t 8 /nobreak > nul
-start "" "%NEW_EXE%"
-del "%~f0"
-"""
-    script_path.write_text(script, encoding="utf-8")
-    return script_path
-
-
-def _cleanup_successful_update_backups():
-    if not _is_frozen_app():
-        return
-    current_exe = Path(sys.executable).resolve()
-    update_dir = Path(tempfile.gettempdir()) / "BuscadorCodigosUpdate"
-    marker_path = update_dir / "successful_update_marker.json"
-    if marker_path.exists():
-        try:
-            marker = json.loads(marker_path.read_text(encoding="utf-8"))
-            old_exe = Path(marker.get("old_exe", "")).resolve()
-            installed_exe = Path(marker.get("installed_exe", "")).resolve()
-            if current_exe == installed_exe and old_exe != current_exe and old_exe.exists():
-                old_exe.unlink()
-            marker_path.unlink()
-        except Exception:
-            pass
-    patterns = [
-        f"{current_exe.stem}.backup-*{current_exe.suffix}",
-        "BuscadorCodigos*.backup-*.exe",
-    ]
-    for pattern in patterns:
-        for path in current_exe.parent.glob(pattern):
-            try:
-                path.unlink()
-            except Exception:
-                pass
-    if update_dir.exists():
-        for pattern in ("*.download", "*.backup-*.exe", "validated-test-*.exe", "abrir_nueva_version.bat"):
-            for path in update_dir.glob(pattern):
-                try:
-                    path.unlink()
-                except Exception:
-                    pass
-        for path in update_dir.glob("test-download-*.exe"):
-            try:
-                path.unlink()
-            except Exception:
-                pass
 
 # =====================================================
 #  Semilla de proveedores (incluida en el programa)
@@ -2035,7 +1860,6 @@ class StartView(ttk.Frame):
         on_load_packs,
         on_load_ranges,
         on_auto_load,
-        on_check_update,
         listado_cargado: bool,
         packs_cargado: bool,
         ranges_cargado: bool,
@@ -2107,8 +1931,7 @@ class StartView(ttk.Frame):
         footer.pack(side="bottom", fill="x")
         update_box = ttk.Frame(footer)
         update_box.pack(side="right", anchor="e")
-        ttk.Label(update_box, text=f"Versión actual: {APP_VERSION}", foreground="#555").pack(side="left", padx=(0, 8))
-        ttk.Button(update_box, text="Revisar actualización", command=on_check_update).pack(side="left")
+        ttk.Label(update_box, text=f"Versión actual: {APP_VERSION}", foreground="#555").pack(side="left")
 
         self.set_listado_cargado(listado_cargado)
         self.set_packs_cargado(packs_cargado)
@@ -3280,8 +3103,6 @@ class RootApp(tk.Tk):
         # La selección del LISTADO DE ARTÍCULOS ahora se hace desde el menú principal
         self._restore_last_auto_load()
         self._show_start()
-        self.after(1000, _cleanup_successful_update_backups)
-        self.after(2000, self._start_update_check)
 
     def _on_close(self):
         try:
@@ -3293,6 +3114,12 @@ class RootApp(tk.Tk):
         self.destroy()
 
     def _restore_last_auto_load(self):
+        """Reanuda la última carga automática sin bloquear el arranque.
+
+        Solo hace comprobaciones baratas (leer JSON, stat de archivos) en el
+        hilo principal. La lectura pesada de los Excel/HTML de packs y precios
+        se hace en un hilo aparte para que la ventana se muestre de inmediato.
+        """
         data = load_auto_last_load()
         try:
             articulos_raw = str(data.get("articulos", "")).strip()
@@ -3307,148 +3134,40 @@ class RootApp(tk.Tk):
             if not (articulos.exists() and packs.exists() and precios.exists()):
                 return
 
-            packs_df, packs_index = load_packs_data(packs)
-            ranges_df, ranges_index = load_price_ranges_data(precios)
-
             self.listado_path = articulos
             self.packs_path = packs
-            self.packs_df = packs_df
-            self.packs_index = packs_index
             self.ranges_path = precios
-            self.ranges_df = ranges_df
-            self.ranges_index = ranges_index
             self.auto_last_load_text = format_auto_last_load_date(data.get("downloaded_at", ""))
+
+            threading.Thread(
+                target=self._restore_last_auto_load_data_worker,
+                args=(packs, precios),
+                daemon=True,
+            ).start()
         except Exception as exc:
             _auto_log(f"No se pudo restaurar última carga automática: {exc}")
 
-    def _start_update_check(self):
-        if not _is_frozen_app():
+    def _restore_last_auto_load_data_worker(self, packs: Path, precios: Path):
+        try:
+            packs_df, packs_index = load_packs_data(packs)
+            ranges_df, ranges_index = load_price_ranges_data(precios)
+        except Exception as exc:
+            _auto_log(f"No se pudo restaurar última carga automática (datos): {exc}")
             return
 
-        def worker():
-            try:
-                latest = _get_latest_release_info()
-                if not latest or not latest.get("url"):
-                    return
-                if _version_tuple(latest["tag"]) <= _version_tuple(APP_VERSION):
-                    return
-                self.after(0, lambda: self._prompt_update(latest))
-            except Exception:
-                # La app no debe molestar si no hay internet o GitHub no responde.
-                return
-            finally:
+        def apply():
+            self.packs_df = packs_df
+            self.packs_index = packs_index
+            self.ranges_df = ranges_df
+            self.ranges_index = ranges_index
+            if hasattr(self, "start_view") and self.start_view is not None:
                 try:
-                    self.after(UPDATE_CHECK_INTERVAL_MS, self._start_update_check)
+                    self.start_view.set_packs_cargado(True)
+                    self.start_view.set_ranges_cargado(True)
                 except Exception:
                     pass
 
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _manual_update_check(self):
-        def worker():
-            try:
-                latest = _get_latest_release_info()
-
-                def finish():
-                    if not latest or not latest.get("url"):
-                        return
-
-                    latest_tag = latest.get("tag", "")
-                    if _version_tuple(latest_tag) <= _version_tuple(APP_VERSION):
-                        messagebox.showinfo(
-                            "Actualización",
-                            f"Ya estás usando la versión más reciente: {APP_VERSION}.",
-                        )
-                        return
-
-                    if not _is_frozen_app():
-                        messagebox.showinfo(
-                            "Actualización disponible",
-                            f"Existe una nueva versión disponible: {latest_tag}.\n\n"
-                            "El instalador automático solo funciona desde el ejecutable portable.",
-                        )
-                        return
-
-                    self._prompt_update(latest)
-
-                self.after(0, finish)
-            except Exception as e:
-                def fail():
-                    messagebox.showerror(
-                        "Error al revisar actualización",
-                        f"No se pudo revisar si hay una nueva versión.\n\nDetalle: {e}",
-                    )
-                self.after(0, fail)
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _prompt_update(self, latest: dict):
-        tag = latest.get("tag", "")
-        if not messagebox.askyesno(
-            "Nueva versión disponible",
-            f"Existe una nueva versión disponible: {tag}.\n\n"
-            "¿Quieres descargarla y dejarla lista para abrir?",
-        ):
-            return
-        self._download_and_install_update(latest)
-
-    def _download_and_install_update(self, latest: dict):
-        progress = tk.Toplevel(self)
-        progress.title("Actualizando")
-        progress.resizable(False, False)
-        progress.transient(self)
-        progress.grab_set()
-        frm = ttk.Frame(progress, padding=16)
-        frm.pack(fill="both", expand=True)
-        ttk.Label(frm, text=f"Descargando {latest.get('tag', 'nueva versión')}…").pack(anchor="w")
-        pb = ttk.Progressbar(frm, mode="indeterminate", length=320)
-        pb.pack(fill="x", pady=(10, 0))
-        pb.start(10)
-
-        def worker():
-            try:
-                current_exe = Path(sys.executable).resolve()
-                new_exe = _download_update_asset(latest["url"], latest["name"], int(latest.get("size") or 0))
-                installed_exe = _install_downloaded_update(current_exe, new_exe, latest.get("tag", ""))
-
-                def finish():
-                    try:
-                        pb.stop()
-                        progress.destroy()
-                    except Exception:
-                        pass
-                    launcher = _write_launch_new_version_script(installed_exe)
-                    messagebox.showinfo(
-                        "Actualización lista",
-                        "La nueva versión ya quedó descargada.\n\n"
-                        f"Archivo nuevo:\n{installed_exe}\n\n"
-                        "Se cerrará esta versión y se abrirá automáticamente la nueva.\n"
-                        "Si la nueva versión abre correctamente, la anterior se borrará sola.",
-                    )
-                    try:
-                        subprocess.Popen(
-                            ["cmd", "/c", str(launcher)],
-                            close_fds=True,
-                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                        )
-                    finally:
-                        self.destroy()
-
-                self.after(0, finish)
-            except Exception as e:
-                def fail():
-                    try:
-                        pb.stop()
-                        progress.destroy()
-                    except Exception:
-                        pass
-                    messagebox.showerror(
-                        "Error al actualizar",
-                        f"No se pudo descargar o instalar la actualización.\n\nDetalle: {e}",
-                    )
-                self.after(0, fail)
-
-        threading.Thread(target=worker, daemon=True).start()
+        self.after(0, apply)
 
     def _choose_listado_inicial(self):
         """Pide el Excel de LISTADO DE ARTÍCULOS y actualiza el estado de los botones."""
@@ -3767,7 +3486,6 @@ class RootApp(tk.Tk):
             on_load_packs=self._choose_packs_inicial,
             on_load_ranges=self._choose_ranges_inicial,
             on_auto_load=self._auto_load_articulos_packs,
-            on_check_update=self._manual_update_check,
             listado_cargado=self.listado_path is not None,
             packs_cargado=bool(self.packs_index),
             ranges_cargado=bool(self.ranges_index),
