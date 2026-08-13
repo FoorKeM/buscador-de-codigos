@@ -97,7 +97,7 @@ _RE_NON_ALNUM = re.compile(r"[^A-Z0-9]")    # elimina no-alfanuméricos (normali
 
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v117"
+APP_VERSION  = "v118"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -2606,6 +2606,18 @@ class SearchView(ttk.Frame):
         sub = _score_results(df, code, code_ws, code_norm, exact, by_barras, by_tivendo, tok_index)
         if not sub.empty:
             return sub, False
+
+        # Antes de asumir que es un codigo de PACK: puede que el producto
+        # exista de verdad en el catalogo por su Identificador, pero la
+        # casilla "Buscar por codigo Tivendo" este apagada. Un producto real
+        # y exacto siempre gana por sobre la interpretacion "es un pack",
+        # sin importar esa casilla (que solo afecta busquedas difusas).
+        direct = self._catalog_rows_for_exact_code(df, code)
+        if not direct.empty:
+            result = direct.copy()
+            result["__score"] = 100
+            return result, False
+
         if not by_packs:
             return sub, False
 
