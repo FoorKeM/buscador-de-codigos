@@ -94,10 +94,12 @@ _RE_PRICE_DEC = re.compile(r"[.,]\d{2}$")   # detecta decimales en precios
 _RE_PRICE_SEP = re.compile(r"[.,]")          # separadores de precio
 _RE_COD_IDENT = re.compile(r"^([A-Za-z]+)(\d+)$")  # códigos tipo A020267
 _RE_NON_ALNUM = re.compile(r"[^A-Z0-9]")    # elimina no-alfanuméricos (normalizar código)
+_RE_LAST_SPACED_DASH = re.compile(r"^.*\s-\s+(\S.*)$")  # separador real: "-" con espacio a ambos lados
+_RE_CODE_TOKEN = re.compile(r"[a-z0-9-]{3,}")  # valida cada trozo de codigo (letras/digitos/guiones internos)
 
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v118"
+APP_VERSION  = "v121"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -1218,6 +1220,59 @@ def _extract_id(val) -> str:
     m = _RE_DIGITS.search(str(val))
     return m.group(1) if m else ""
 
+def _extract_trailing_codes(texto) -> List[str]:
+    """Extrae el/los codigo(s) al final de un Nombre o Codigo, ej.
+    'CHOCOLATE NESTLE SAHNE-NUSS 90 GR - 7582 0' -> ['75820'].
+
+    El separador real es el ULTIMO guion que tiene espacio a AMBOS lados
+    (" - "), nunca un guion pegado a letras/numeros: eso evita confundir el
+    separador con un guion que es parte de una marca ("SAHNE-NUSS") o parte
+    de la estructura del propio codigo ("EAN13-0799192433702", "CJ-AO-VDR-
+    SE-250-C"). Todo lo que sigue a ese separador se divide SOLO por "/"
+    (multiples codigos por factura, ej. "8116 0/ 791 0"); los guiones DENTRO
+    de cada trozo se conservan intactos porque son parte del codigo mismo,
+    no un divisor (dividirlos rompería codigos compuestos como CJ-AO-VDR-
+    SE-250-C). Los espacios internos de cada trozo se eliminan para que
+    "7582 0" y "75820" sean la misma clave de busqueda."""
+    m = _RE_LAST_SPACED_DASH.match(str(texto).strip())
+    if not m:
+        return []
+    codes = []
+    for piece in m.group(1).split("/"):
+        compact = piece.replace(" ", "").strip().lower()
+        if _RE_CODE_TOKEN.fullmatch(compact):
+            codes.append(compact)
+    return codes
+
+def _drop_ambiguous_trailing_codes(df: pd.DataFrame) -> pd.DataFrame:
+    """Un codigo extraido del final de Nombre/Codigo solo sirve como clave de
+    busqueda si identifica a UN SOLO producto en todo el catalogo. Algunos
+    textos que quedan ahi no son codigos individuales: marcadores como
+    "SINITEM" (sin codigo asignado) o prefijos de familia/categoria como
+    "LC1" o "02025" (compartidos por decenas de variantes, ej. "02025/517",
+    "02025/510", ...) se repiten en muchos productos distintos. Si dejaramos
+    esos como claves buscables, buscar ese texto traeria decenas de
+    productos no relacionados en vez de uno. Se descartan comparando contra
+    TODO el catalogo (no solo unos ejemplos), asi este filtro se adapta solo
+    a cualquier caso similar futuro sin necesitar listas de palabras."""
+    owner: Dict[str, str] = {}
+    ambiguous = set()
+    for ident, codes in zip(df["identificador"], df["_nombre_suffix_codes"]):
+        for c in codes:
+            prev = owner.setdefault(c, ident)
+            if prev != ident:
+                ambiguous.add(c)
+    for ident, codes in zip(df["identificador"], df["_codigo_suffix_codes"]):
+        for c in codes:
+            prev = owner.setdefault(c, ident)
+            if prev != ident:
+                ambiguous.add(c)
+    if not ambiguous:
+        return df
+    df["_nombre_suffix_codes"] = df["_nombre_suffix_codes"].apply(lambda lst: [c for c in lst if c not in ambiguous])
+    df["_codigo_suffix_codes"] = df["_codigo_suffix_codes"].apply(lambda lst: [c for c in lst if c not in ambiguous])
+    return df
+
 def _make_nf_row(code: str, pos: int) -> pd.DataFrame:
     """Crea una fila 'No encontrado' para el buscador."""
     return pd.DataFrame([{
@@ -1240,6 +1295,10 @@ def _ensure_search_helper_columns(df: pd.DataFrame) -> pd.DataFrame:
         df["_identificador_ws"] = df["identificador"].astype(str).str.strip().apply(lambda s: _ws_re.sub(" ", s))
     if "_codigo_ws" not in df.columns:
         df["_codigo_ws"] = df["codigo"].astype(str).str.strip().apply(lambda s: _ws_re.sub(" ", s))
+    if "_nombre_suffix_codes" not in df.columns or "_codigo_suffix_codes" not in df.columns:
+        df["_nombre_suffix_codes"] = df["nombre"].map(_extract_trailing_codes)
+        df["_codigo_suffix_codes"] = df["codigo"].map(_extract_trailing_codes)
+        df = _drop_ambiguous_trailing_codes(df)
     if "_nombre_lc" not in df.columns:
         df["_nombre_lc"] = df["nombre"].map(_norm_lc)
     if "_codigo_tokens" not in df.columns:
@@ -2581,19 +2640,44 @@ class SearchView(ttk.Frame):
         codes = [r["articulo_codigo"] for r in records if str(r.get("articulo_codigo", "")).strip()]
         return list(dict.fromkeys(codes))
 
-    def _catalog_rows_for_exact_code(self, df, codigo: str):
-        """Filas del catalogo cuyo codigo O identificador (Tivendo) sea
+    def _catalog_rows_for_exact_code(self, df, codigo: str, include_suffix: bool = False):
+        """Filas del catalogo cuyo codigo o identificador (Tivendo) sea
         exactamente `codigo`. Se usa para resolver los articulos que
         componen un pack, sin depender de los checkbox de busqueda (exacto/
         por codigo Tivendo/por codigo de barra) que aplican a la busqueda
-        que escribio el usuario, no a esta resolucion interna."""
+        que escribio el usuario, no a esta resolucion interna.
+
+        Si `include_suffix` es True, tambien compara contra el/los codigo(s)
+        al final de Nombre/Codigo (ej. "... - 7582 0"). Esto queda atado a la
+        casilla "Coincidencia exacta (código)": solo se activa cuando esa
+        casilla esta marcada; desmarcada, se sigue usando la busqueda difusa
+        normal (encuentra el mas similar)."""
         code_ws_lc = _ws_re.sub(" ", str(codigo)).strip().lower()
         if not code_ws_lc:
             return df.iloc[0:0]
-        mask = (df["_codigo_ws"].str.lower() == code_ws_lc)
+        direct_mask = (df["_codigo_ws"].str.lower() == code_ws_lc)
         if "_identificador_ws" in df.columns:
-            mask = mask | (df["_identificador_ws"].str.lower() == code_ws_lc)
-        return df[mask]
+            direct_mask = direct_mask | (df["_identificador_ws"].str.lower() == code_ws_lc)
+        if not include_suffix:
+            return df[direct_mask]
+
+        code_compact = code_ws_lc.replace(" ", "")
+        suffix_mask = pd.Series(False, index=df.index)
+        if "_nombre_suffix_codes" in df.columns:
+            suffix_mask = suffix_mask | df["_nombre_suffix_codes"].apply(lambda codes: code_compact in codes)
+        if "_codigo_suffix_codes" in df.columns:
+            suffix_mask = suffix_mask | df["_codigo_suffix_codes"].apply(lambda codes: code_compact in codes)
+
+        result = df[direct_mask | suffix_mask].copy()
+        # Las filas que SOLO calzaron por el codigo al final del nombre (no
+        # por su Codigo/Identificador real) muestran el codigo que escribio
+        # el usuario en la columna "Código", en vez del campo Codigo crudo
+        # del catalogo (que puede traer texto de mas, ej. "NUSS 90 GR -
+        # 7582 0" en vez de solo "7582 0").
+        only_suffix = (suffix_mask & ~direct_mask).reindex(result.index, fill_value=False)
+        if only_suffix.any():
+            result.loc[only_suffix, "codigo"] = _ws_re.sub(" ", str(codigo)).strip()
+        return result
 
     def _score_results_with_pack_fallback(self, df, code, exact, by_barras, by_tivendo, tok_index, by_packs=True):
         """Busca `code` en el catalogo. Si no aparece pero coincide con el
@@ -2612,7 +2696,7 @@ class SearchView(ttk.Frame):
         # casilla "Buscar por codigo Tivendo" este apagada. Un producto real
         # y exacto siempre gana por sobre la interpretacion "es un pack",
         # sin importar esa casilla (que solo afecta busquedas difusas).
-        direct = self._catalog_rows_for_exact_code(df, code)
+        direct = self._catalog_rows_for_exact_code(df, code, include_suffix=exact)
         if not direct.empty:
             result = direct.copy()
             result["__score"] = 100
@@ -2634,8 +2718,12 @@ class SearchView(ttk.Frame):
         return result, True
 
     def _pack_display_for_code(self, codigo: str) -> str:
+        """Texto de la columna "Packs". El emoji verde es intencional: un
+        ttk.Treeview no permite colorear solo una celda (los tags de color
+        se aplican a toda la fila), asi que se usa un emoji con color propio
+        para destacar "tiene pack" sin teñir el resto de la fila."""
         records = self._pack_records_for_code(codigo)
-        return f"Si ({len(records)})" if records else "No"
+        return f"🟢 Si ({len(records)})" if records else "No"
 
     def _range_record_for_code(self, codigo: str):
         if not self.ranges_index:
