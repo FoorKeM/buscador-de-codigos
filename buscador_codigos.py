@@ -99,7 +99,7 @@ _RE_CODE_TOKEN = re.compile(r"[a-z0-9-]{3,}")  # valida cada trozo de codigo (le
 
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v122"
+APP_VERSION  = "v123"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -2938,6 +2938,13 @@ class SearchView(ttk.Frame):
         top.title("Packs vinculados")
         top.geometry("980x420")
         top.transient(self.winfo_toplevel())
+        try:
+            top.update_idletasks()
+            x = self.winfo_rootx() + max(0, (self.winfo_width() - top.winfo_width()) // 2)
+            y = self.winfo_rooty() + max(0, (self.winfo_height() - top.winfo_height()) // 2)
+            top.geometry(f"+{x}+{y}")
+        except Exception:
+            pass
 
         info = ttk.Label(
             top,
@@ -2989,20 +2996,14 @@ class SearchView(ttk.Frame):
             )
 
         def copy_pack_barcodes():
-            codes = []
-            for rec in details:
-                code = str(rec["pack_barra"]).strip()
-                if code and code not in codes:
-                    codes.append(code)
-            self._copy_to_clipboard(JOIN_SEP.join(codes), f"Copiados {len(codes)} codigo(s) de barra de pack.")
-
-        def copy_selected_pack_barcodes():
+            """Copia el codigo de barra de las filas seleccionadas; si no hay
+            ninguna seleccionada, copia el de todas (igual que el resto de
+            los botones "Copiar..." del programa)."""
             sels = tree.selection()
-            if not sels:
-                return
+            source = [(tree.set(iid, "pack_barra")) for iid in sels] if sels else [rec["pack_barra"] for rec in details]
             codes = []
-            for iid in sels:
-                code = str(tree.set(iid, "pack_barra")).strip()
+            for code in source:
+                code = str(code).strip()
                 if code and code not in codes:
                     codes.append(code)
             if codes:
@@ -3018,7 +3019,7 @@ class SearchView(ttk.Frame):
                 pack_menu.tk_popup(event.x_root, event.y_root)
 
         pack_menu = tk.Menu(top, tearoff=0)
-        pack_menu.add_command(label="Copiar codigo de barra", command=copy_selected_pack_barcodes)
+        pack_menu.add_command(label="Copiar codigo de barra", command=copy_pack_barcodes)
         tree.bind("<Button-3>", show_pack_context_menu)
         tree.bind("<Button-2>", show_pack_context_menu)
 
@@ -5035,6 +5036,13 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         top = tk.Toplevel(self)
         top.title("Instrucciones - Flujo recomendado")
         top.geometry("750x450")
+        try:
+            top.update_idletasks()
+            x = self.winfo_rootx() + max(0, (self.winfo_width() - top.winfo_width()) // 2)
+            y = self.winfo_rooty() + max(0, (self.winfo_height() - top.winfo_height()) // 2)
+            top.geometry(f"+{x}+{y}")
+        except Exception:
+            pass
 
         texto = (
             "Flujo recomendado para el Ingreso Masivo de Artículos:\n\n"
