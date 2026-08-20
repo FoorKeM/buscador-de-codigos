@@ -99,7 +99,7 @@ _RE_CODE_TOKEN = re.compile(r"[a-z0-9-]{3,}")  # valida cada trozo de codigo (le
 
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v121"
+APP_VERSION  = "v122"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -334,6 +334,7 @@ except Exception:
 AUTO_DOWNLOAD_DIR = APP_DATA_DIR / "auto_downloads"
 AUTO_DOWNLOAD_STAGING_DIR = APP_DATA_DIR / "auto_downloads_tmp"
 AUTO_CREDENTIALS_PATH = APP_DATA_DIR / "credenciales_auto.json"
+DEFAULT_TIVENDO_USUARIO = "sistemamercadohouse@gmail.com"
 AUTO_LAST_LOAD_PATH = APP_DATA_DIR / "ultima_carga_automatica.json"
 AUTO_DIAG_DIR = APP_DATA_DIR / "diagnosticos_auto"
 MERCADOHOUSE_SYNC_DATA_DIR = Path(os.getenv("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")) / "MercadohouseSync"
@@ -425,12 +426,12 @@ def load_auto_credentials() -> dict:
             data = json.load(f)
             if isinstance(data, dict):
                 return {
-                    "usuario": str(data.get("usuario", "")),
+                    "usuario": str(data.get("usuario", "")) or DEFAULT_TIVENDO_USUARIO,
                     "password": str(data.get("password", "")),
                 }
     except Exception:
         pass
-    return {"usuario": "", "password": ""}
+    return {"usuario": DEFAULT_TIVENDO_USUARIO, "password": ""}
 
 def save_auto_credentials(usuario: str, password: str):
     try:
@@ -2987,17 +2988,43 @@ class SearchView(ttk.Frame):
                 ),
             )
 
-        def copy_pack_codes():
+        def copy_pack_barcodes():
             codes = []
             for rec in details:
-                code = str(rec["pack_codigo"]).strip()
+                code = str(rec["pack_barra"]).strip()
                 if code and code not in codes:
                     codes.append(code)
-            self._copy_to_clipboard(JOIN_SEP.join(codes), f"Copiados {len(codes)} codigo(s) de pack.")
+            self._copy_to_clipboard(JOIN_SEP.join(codes), f"Copiados {len(codes)} codigo(s) de barra de pack.")
+
+        def copy_selected_pack_barcodes():
+            sels = tree.selection()
+            if not sels:
+                return
+            codes = []
+            for iid in sels:
+                code = str(tree.set(iid, "pack_barra")).strip()
+                if code and code not in codes:
+                    codes.append(code)
+            if codes:
+                self._copy_to_clipboard(JOIN_SEP.join(codes), f"Copiados {len(codes)} codigo(s) de barra de pack.")
+
+        def show_pack_context_menu(event):
+            iid = tree.identify_row(event.y)
+            if iid:
+                tree.focus(iid)
+                if iid not in tree.selection():
+                    tree.selection_set(iid)
+            if tree.selection():
+                pack_menu.tk_popup(event.x_root, event.y_root)
+
+        pack_menu = tk.Menu(top, tearoff=0)
+        pack_menu.add_command(label="Copiar codigo de barra", command=copy_selected_pack_barcodes)
+        tree.bind("<Button-3>", show_pack_context_menu)
+        tree.bind("<Button-2>", show_pack_context_menu)
 
         buttons = ttk.Frame(top)
         buttons.pack(fill="x", padx=10, pady=(0, 10))
-        ttk.Button(buttons, text="Copiar codigos de pack", command=copy_pack_codes).pack(side="left")
+        ttk.Button(buttons, text="Copiar codigo de barra de pack", command=copy_pack_barcodes).pack(side="left")
         ttk.Button(buttons, text="Cerrar", command=top.destroy).pack(side="right")
 
     # ---- Helper de portapapeles ----
@@ -3480,6 +3507,11 @@ class RootApp(tk.Tk):
 
     def _ask_auto_credentials(self) -> Optional[tuple]:
         saved = load_auto_credentials()
+        if saved.get("usuario") and saved.get("password"):
+            # Ya quedaron guardadas de una carga anterior: no volver a preguntar
+            # cada vez que se abre el programa.
+            return saved["usuario"], saved["password"]
+
         dialog = tk.Toplevel(self)
         dialog.title("Carga automática")
         dialog.transient(self)
@@ -3500,16 +3532,22 @@ class RootApp(tk.Tk):
 
         ttk.Label(frame, text="Contraseña:").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=4)
         pass_var = tk.StringVar(value=saved.get("password", ""))
-        pass_entry = ttk.Entry(frame, textvariable=pass_var, width=38, show="*")
+        pass_entry = ttk.Entry(frame, textvariable=pass_var, width=34, show="*")
         pass_entry.grid(row=2, column=1, sticky="ew", pady=4)
+
+        def toggle_password_visibility():
+            pass_entry.config(show="" if pass_entry.cget("show") == "*" else "*")
+
+        eye_btn = ttk.Button(frame, text="👁", width=3, command=toggle_password_visibility)
+        eye_btn.grid(row=2, column=2, padx=(4, 0), pady=4)
 
         note = ttk.Label(
             frame,
-            text="Se preguntará siempre para que puedas actualizar la contraseña cuando cambie.",
+            text="Estos datos se guardan localmente: la próxima vez no se volverán a pedir.",
             foreground="#555",
             wraplength=360,
         )
-        note.grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 12))
+        note.grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 12))
 
         result = {"value": None}
 
@@ -3527,7 +3565,7 @@ class RootApp(tk.Tk):
             dialog.destroy()
 
         buttons = ttk.Frame(frame)
-        buttons.grid(row=4, column=0, columnspan=2, sticky="e")
+        buttons.grid(row=4, column=0, columnspan=3, sticky="e")
         ttk.Button(buttons, text="Cancelar", command=cancel).pack(side="left", padx=(0, 8))
         ttk.Button(buttons, text="Cargar automático", command=accept).pack(side="left")
 
