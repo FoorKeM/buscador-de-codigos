@@ -99,7 +99,7 @@ _RE_CODE_TOKEN = re.compile(r"[a-z0-9-]{3,}")  # valida cada trozo de codigo (le
 
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v125"
+APP_VERSION  = "v126"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -2270,11 +2270,26 @@ class SearchView(ttk.Frame):
         ttk.Button(btns, text="Buscar por Proveedor", command=self.on_search).pack(side=tk.LEFT, padx=4)
         ttk.Button(btns, text="Buscar general", command=lambda: self.on_search(force_general=True)).pack(side=tk.LEFT, padx=4)
         ttk.Button(btns, text="Limpiar", command=self.on_clear).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btns, text="Ver packs vinculados", command=self.show_linked_packs).pack(side=tk.LEFT, padx=4)
         ttk.Button(btns, text="Copiar...", command=self.show_copy_menu).pack(side=tk.LEFT, padx=4)
 
+        ttk.Label(
+            content,
+            text="Haz clic en el ▸/▾ junto a un articulo con \U0001F7E2 para ver sus packs vinculados. "
+                 "Marca ☐ junto a un pack y usa Copiar → \"Copiar codigo pack\".",
+            foreground="#7A4E00",
+        ).grid(row=4, column=0, sticky="w", pady=(6, 0))
+
+        # ttk.Treeview desplaza cada nivel hijo ("indent") bastante hacia la
+        # derecha por defecto, asi que la casilla ☐ de un pack (nivel 1)
+        # quedaria mucho mas a la derecha que el ▸ del articulo (nivel 0).
+        # Con un estilo propio de indent chico, la casilla queda pegada a la
+        # izquierda, alineada con el ▸/▾.
+        style = ttk.Style(self)
+        style.configure("Acordeon.Treeview", indent=0)
         cols = ("codigo","nombre","barcode_interno","barcode_externo","empresa","packs","rango1","rango2")
-        self.tree = ttk.Treeview(self, columns=cols, show="headings", selectmode="extended")
+        self.tree = ttk.Treeview(self, columns=cols, show="tree headings", selectmode="extended", style="Acordeon.Treeview")
+        self.tree.heading("#0", text="")
+        self.tree.column("#0", width=34, minwidth=34, stretch=False, anchor="w")
         for c, t in zip(cols, ["Código","Nombre","Cód. barra interno","Cód. barra externo","Empresa","Packs","Rango 1","Rango 2"]):
             self.tree.heading(c, text=t)
         self.tree.heading("packs", text="Packs")
@@ -2305,13 +2320,36 @@ class SearchView(ttk.Frame):
             anchor = "center" if c in {"packs", "rango1", "rango2"} else "w"
             self.tree.column(c, width=min_width, minwidth=min_width, anchor=anchor, stretch=False)
         self.tree.tag_configure("dup_input", background="#FFF3CD")
+        self.tree.tag_configure("pack_row", background="#F1F1FB")
+
+        # ---- Acordeon de packs vinculados ----
+        # _row_lookup_code: iid de articulo -> codigo/identificador con el que
+        #   se consulta el Maestro de Packs (para cargar sus packs al abrir).
+        # _pack_children_loaded: iids de articulo cuyos packs ya se insertaron
+        #   de verdad como hijos en el arbol (para no volver a consultarlos
+        #   cada vez que se abre el acordeon, solo la primera vez).
+        # _checked_pack_iids: iids de fila de PACK marcados con la casilla ☑,
+        #   son los que "Copiar codigo pack" copia.
+        # El indicador ▸/▾ nativo del Treeview solo aparece si el item ya
+        # tiene hijos, asi que a cada articulo CON pack se le agrega un hijo
+        # "placeholder" vacio en populate() para que el indicador se vea
+        # desde el principio, sin cargar los packs todavia. <<TreeviewOpen>>
+        # se dispara al hacer clic en ese indicador (o doble clic nativo
+        # sobre la fila): ahi se reemplaza el placeholder por los packs
+        # reales, una sola vez.
+        self._row_lookup_code = {}
+        self._pack_children_loaded = set()
+        self._checked_pack_iids = set()
+        self._pack_child_records = {}
+        self.tree.bind("<<TreeviewOpen>>", self._on_tree_open)
+        self.tree.bind("<Button-1>", self._on_tree_click_toggle_checkbox, add="+")
 
         vsb2 = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
         hsb2 = ttk.Scrollbar(self, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscroll=vsb2.set, xscroll=hsb2.set)
         self.tree.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=(8,10))
         vsb2.place(in_=self.tree, relx=1.0, rely=0, relheight=1.0, anchor="ne")
-        hsb2.pack(side=tk.BOTTOM, fill=tk.X)
+        hsb2.place(in_=self.tree, relx=0, rely=1.0, relwidth=1.0, anchor="sw")
 
         self.var_status = tk.StringVar(value=self.status_db_text)
         lbl_status = ttk.Label(self, textvariable=self.var_status, anchor="w", cursor="hand2")
@@ -2724,13 +2762,92 @@ class SearchView(ttk.Frame):
         result["__score"] = 100
         return result, True
 
-    def _pack_display_for_code(self, codigo: str) -> str:
-        """Texto de la columna "Packs". El emoji verde es intencional: un
-        ttk.Treeview no permite colorear solo una celda (los tags de color
-        se aplican a toda la fila), asi que se usa un emoji con color propio
-        para destacar "tiene pack" sin teñir el resto de la fila."""
-        records = self._pack_records_for_code(codigo)
-        return f"🟢 Si ({len(records)})" if records else "No"
+    # ---- Acordeon de packs vinculados ----
+    def _on_tree_open(self, event):
+        """Se dispara con <<TreeviewOpen>> cuando el usuario abre una fila
+        (clic en el indicador ▸ nativo, o doble clic nativo sobre la fila).
+        Solo actua la PRIMERA vez que se abre un articulo: reemplaza su hijo
+        "placeholder" (vacio, solo estaba para que el indicador se vea) por
+        sus packs reales. Abrirla de nuevo despues no vuelve a consultar
+        nada, y cerrarla solo la oculta (ttk.Treeview no borra los hijos al
+        cerrar), asi que las casillas marcadas se mantienen."""
+        iid = self.tree.focus()
+        if not iid or iid in self._pack_children_loaded:
+            return
+        self._populate_pack_children(iid)
+
+    def _populate_pack_children(self, iid):
+        """Reemplaza el hijo placeholder de `iid` por sus packs reales, cada
+        uno con su propia casilla ☐ (columna #0) para marcarla antes de
+        copiar."""
+        self.tree.delete(*self.tree.get_children(iid))
+        codigo_busqueda = self._row_lookup_code.get(iid, "")
+        records = self._pack_records_for_code(codigo_busqueda)
+        if not records:
+            self._pack_children_loaded.add(iid)
+            return
+        for rec in records:
+            child = self.tree.insert(
+                iid, "end",
+                text="☐",
+                values=(
+                    rec.get("pack_codigo", ""),
+                    rec.get("pack_nombre", ""),
+                    rec.get("pack_barra", ""),
+                    "", "", "(pack)", "", "",
+                ),
+                tags=("pack_row",),
+            )
+            self._pack_child_records[child] = rec
+        self.tree.item(iid, open=True)
+        self._pack_children_loaded.add(iid)
+
+    def _on_tree_click_toggle_checkbox(self, event):
+        """Clic en la columna de icono (#0) de una fila de PACK marca/
+        desmarca su casilla ☐/☑. En una fila de articulo esa misma columna
+        solo tiene la flecha nativa de expandir/colapsar, asi que ahi no
+        hacemos nada."""
+        if self.tree.identify_region(event.x, event.y) != "tree":
+            return
+        iid = self.tree.identify_row(event.y)
+        if not iid or iid not in self._pack_child_records:
+            return
+        if iid in self._checked_pack_iids:
+            self._checked_pack_iids.discard(iid)
+            self.tree.item(iid, text="☐")
+        else:
+            self._checked_pack_iids.add(iid)
+            self.tree.item(iid, text="☑")
+
+    def copy_checked_pack_barcodes(self):
+        """Copia SOLO el codigo de barra de los packs marcados con ☑. A
+        diferencia del resto de los botones "Copiar...", si no hay ningun
+        pack marcado NO copia todo: avisa y no copia nada."""
+        if not self._checked_pack_iids:
+            messagebox.showwarning(
+                "Atención",
+                "No hay ningun pack marcado. Abre el ▸ de una fila con "
+                "\U0001F7E2 para ver sus packs y marca ☐ los que quieras copiar.",
+            )
+            return
+        codes = []
+        for parent in self.tree.get_children():
+            for child in self.tree.get_children(parent):
+                if child not in self._checked_pack_iids:
+                    continue
+                rec = self._pack_child_records.get(child)
+                if not rec:
+                    continue
+                code = str(rec.get("pack_barra", "")).strip()
+                if code and code not in codes:
+                    codes.append(code)
+        if not codes:
+            messagebox.showwarning("Atención", "Los packs marcados no tienen codigo de barra valido.")
+            return
+        self._copy_to_clipboard(
+            JOIN_SEP.join(codes),
+            f"Copiados {len(codes)} codigo(s) de barra de pack (marcados).",
+        )
 
     def _range_record_for_code(self, codigo: str):
         if not self.ranges_index:
@@ -2767,6 +2884,13 @@ class SearchView(ttk.Frame):
         for x in self.tree.get_children(): self.tree.delete(x)
         total = len(df)
 
+        # Cada busqueda nueva reinicia el estado del acordeon de packs (los
+        # hijos ya cargados se borraron junto con las filas padre arriba).
+        self._row_lookup_code = {}
+        self._pack_children_loaded = set()
+        self._checked_pack_iids = set()
+        self._pack_child_records = {}
+
         dup_inputs = set()
         if "__input" in df.columns:
             inp_series = df["__input"].fillna("").astype(str).str.strip()
@@ -2785,15 +2909,32 @@ class SearchView(ttk.Frame):
 
         ins = self.tree.insert
         disp = self._display_emp
-        pack_disp = self._pack_display_for_code
         for ident, cod, nom, bi, be, eid, inp in zip(col_ident, col_codigo, col_nombre, col_bi, col_be, col_eid, col_inp):
             emp_txt = "" if nom == "No encontrado" else disp(eid)
-            pack_txt = "" if nom == "No encontrado" else pack_disp(ident or cod)
+            lookup_code = ident or cod
+            pack_records = [] if nom == "No encontrado" else self._pack_records_for_code(lookup_code)
+            if nom == "No encontrado":
+                pack_txt = ""
+            elif pack_records:
+                pack_txt = f"🟢 Si ({len(pack_records)})"
+            else:
+                pack_txt = "No"
             range_rec = {} if nom == "No encontrado" else self._range_record_for_code(ident or cod)
             rango1 = range_rec.get("rango1", "")
             rango2 = range_rec.get("rango2", "")
             tags = ("dup_input",) if inp.strip() in dup_inputs else ()
-            ins("", "end", values=(cod, nom, bi, be, emp_txt, pack_txt, rango1, rango2), tags=tags)
+            row_iid = ins("", "end", values=(cod, nom, bi, be, emp_txt, pack_txt, rango1, rango2), tags=tags)
+            if nom != "No encontrado":
+                # Guarda con que codigo consultar el Maestro de Packs cuando
+                # se abra el acordeon de esta fila.
+                self._row_lookup_code[row_iid] = lookup_code
+                if pack_records:
+                    # Placeholder vacio: existe solo para que el Treeview
+                    # dibuje el indicador ▸ desde el principio (sin el, no
+                    # se muestra ningun indicador hasta que la fila ya
+                    # tenga hijos reales). _on_tree_open lo reemplaza por
+                    # los packs de verdad la primera vez que se abre.
+                    ins(row_iid, "end", tags=("pack_placeholder",))
 
         self._autosize_result_columns()
 
@@ -2891,156 +3032,6 @@ class SearchView(ttk.Frame):
                 + " | Si estas buscando codigos de barra, marca 'Buscar por codigos de barra'."
             )
 
-    def _rows_for_pack_lookup(self):
-        """Devuelve (codigo_busqueda, codigo_mostrado, nombre) por cada fila
-        a consultar. `codigo_busqueda` (identificador o codigo) es la clave
-        con la que se cruza contra el Maestro de Packs; `codigo_mostrado` es
-        el mismo codigo que ve el usuario en la columna "Código" de los
-        resultados, para poder identificar a que articulo corresponde cada
-        pack vinculado (el identificador interno, ej. A000970, no siempre
-        es reconocible para el usuario)."""
-        if self.last_results is None or self.last_results.empty:
-            return []
-
-        children = list(self.tree.get_children())
-        selected = set(self.tree.selection())
-        positions = [i for i, iid in enumerate(children) if iid in selected] if selected else list(range(len(children)))
-
-        rows = []
-        for pos in positions:
-            if pos >= len(self.last_results):
-                continue
-            row = self.last_results.iloc[pos]
-            codigo = str(row.get("codigo", "")).strip()
-            identificador = str(row.get("identificador", "")).strip()
-            nombre = str(row.get("nombre", "")).strip()
-            if not codigo or nombre == "No encontrado":
-                continue
-            rows.append((identificador or codigo, codigo, nombre))
-        return rows
-
-    def show_linked_packs(self):
-        if not self.packs_index:
-            messagebox.showinfo("Packs", "Primero carga el MAESTRO DE PACKS desde el menu principal.")
-            return
-
-        rows = self._rows_for_pack_lookup()
-        if not rows:
-            messagebox.showinfo("Packs", "No hay articulos validos para consultar. Selecciona una fila o realiza una busqueda.")
-            return
-
-        details = []
-        seen = set()
-        for codigo_busqueda, codigo_mostrado, nombre in rows:
-            for rec in self._pack_records_for_code(codigo_busqueda):
-                key = (codigo_busqueda, rec["pack_codigo"], rec["articulo_codigo"], rec["cantidad"])
-                if key in seen:
-                    continue
-                seen.add(key)
-                details.append({
-                    "codigo_articulo": codigo_mostrado,
-                    "nombre_articulo": nombre,
-                    **rec,
-                })
-
-        if not details:
-            messagebox.showinfo("Packs", "No se encontraron packs vinculados para los articulos consultados.")
-            return
-
-        top = tk.Toplevel(self)
-        top.title("Packs vinculados")
-        top.geometry("980x420")
-        top.transient(self.winfo_toplevel())
-        try:
-            top.update_idletasks()
-            x = self.winfo_rootx() + max(0, (self.winfo_width() - top.winfo_width()) // 2)
-            y = self.winfo_rooty() + max(0, (self.winfo_height() - top.winfo_height()) // 2)
-            top.geometry(f"+{x}+{y}")
-        except Exception:
-            pass
-
-        info = ttk.Label(
-            top,
-            text=f"Packs vinculados encontrados: {len(details)}",
-            foreground="#444",
-        )
-        info.pack(fill="x", padx=10, pady=(10, 4))
-
-        frame = ttk.Frame(top)
-        frame.pack(fill="both", expand=True, padx=10, pady=6)
-
-        cols = ("codigo_articulo", "pack_codigo", "pack_nombre", "pack_barra", "cantidad")
-        tree = ttk.Treeview(frame, columns=cols, show="headings", selectmode="extended")
-        headings = {
-            "codigo_articulo": "Articulo",
-            "pack_codigo": "Codigo pack",
-            "pack_nombre": "Nombre pack",
-            "pack_barra": "Codigo barra pack",
-            "cantidad": "Cantidad",
-        }
-        widths = {
-            "codigo_articulo": 120,
-            "pack_codigo": 120,
-            "pack_nombre": 430,
-            "pack_barra": 180,
-            "cantidad": 90,
-        }
-        for col in cols:
-            tree.heading(col, text=headings[col])
-            tree.column(col, width=widths[col], anchor="w")
-        tree.column("cantidad", anchor="center")
-
-        vsb = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
-        tree.configure(yscrollcommand=vsb.set)
-        tree.pack(side="left", fill="both", expand=True)
-        vsb.pack(side="left", fill="y")
-
-        for rec in details:
-            tree.insert(
-                "",
-                "end",
-                values=(
-                    rec["codigo_articulo"],
-                    rec["pack_codigo"],
-                    rec["pack_nombre"],
-                    rec["pack_barra"],
-                    rec["cantidad"],
-                ),
-            )
-
-        def copy_pack_barcodes():
-            """Copia el codigo de barra de las filas seleccionadas; si no hay
-            ninguna seleccionada, copia el de todas (igual que el resto de
-            los botones "Copiar..." del programa)."""
-            sels = tree.selection()
-            source = [(tree.set(iid, "pack_barra")) for iid in sels] if sels else [rec["pack_barra"] for rec in details]
-            codes = []
-            for code in source:
-                code = str(code).strip()
-                if code and code not in codes:
-                    codes.append(code)
-            if codes:
-                self._copy_to_clipboard(JOIN_SEP.join(codes), f"Copiados {len(codes)} codigo(s) de barra de pack.")
-
-        def show_pack_context_menu(event):
-            iid = tree.identify_row(event.y)
-            if iid:
-                tree.focus(iid)
-                if iid not in tree.selection():
-                    tree.selection_set(iid)
-            if tree.selection():
-                pack_menu.tk_popup(event.x_root, event.y_root)
-
-        pack_menu = tk.Menu(top, tearoff=0)
-        pack_menu.add_command(label="Copiar codigo de barra", command=copy_pack_barcodes)
-        tree.bind("<Button-3>", show_pack_context_menu)
-        tree.bind("<Button-2>", show_pack_context_menu)
-
-        buttons = ttk.Frame(top)
-        buttons.pack(fill="x", padx=10, pady=(0, 10))
-        ttk.Button(buttons, text="Copiar codigo de barra de pack", command=copy_pack_barcodes).pack(side="left")
-        ttk.Button(buttons, text="Cerrar", command=top.destroy).pack(side="right")
-
     # ---- Helper de portapapeles ----
     def _copy_to_clipboard(self, text: str, status_msg: str):
         """Copia texto al portapapeles y actualiza la barra de estado."""
@@ -3057,6 +3048,8 @@ class SearchView(ttk.Frame):
         menu.add_command(label="Nombres", command=self.copy_nombres)
         menu.add_separator()
         menu.add_command(label="NO encontrados", command=self.copy_not_found_inputs)
+        menu.add_separator()
+        menu.add_command(label="Copiar codigo pack", command=self.copy_checked_pack_barcodes)
         try:
             x = self.winfo_pointerx()
             y = self.winfo_pointery()
