@@ -99,7 +99,7 @@ _RE_CODE_TOKEN = re.compile(r"[a-z0-9-]{3,}")  # valida cada trozo de codigo (le
 
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v124"
+APP_VERSION  = "v125"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -2892,6 +2892,13 @@ class SearchView(ttk.Frame):
             )
 
     def _rows_for_pack_lookup(self):
+        """Devuelve (codigo_busqueda, codigo_mostrado, nombre) por cada fila
+        a consultar. `codigo_busqueda` (identificador o codigo) es la clave
+        con la que se cruza contra el Maestro de Packs; `codigo_mostrado` es
+        el mismo codigo que ve el usuario en la columna "Código" de los
+        resultados, para poder identificar a que articulo corresponde cada
+        pack vinculado (el identificador interno, ej. A000970, no siempre
+        es reconocible para el usuario)."""
         if self.last_results is None or self.last_results.empty:
             return []
 
@@ -2909,7 +2916,7 @@ class SearchView(ttk.Frame):
             nombre = str(row.get("nombre", "")).strip()
             if not codigo or nombre == "No encontrado":
                 continue
-            rows.append((identificador or codigo, nombre))
+            rows.append((identificador or codigo, codigo, nombre))
         return rows
 
     def show_linked_packs(self):
@@ -2924,14 +2931,14 @@ class SearchView(ttk.Frame):
 
         details = []
         seen = set()
-        for codigo, nombre in rows:
-            for rec in self._pack_records_for_code(codigo):
-                key = (codigo, rec["pack_codigo"], rec["articulo_codigo"], rec["cantidad"])
+        for codigo_busqueda, codigo_mostrado, nombre in rows:
+            for rec in self._pack_records_for_code(codigo_busqueda):
+                key = (codigo_busqueda, rec["pack_codigo"], rec["articulo_codigo"], rec["cantidad"])
                 if key in seen:
                     continue
                 seen.add(key)
                 details.append({
-                    "codigo_articulo": codigo,
+                    "codigo_articulo": codigo_mostrado,
                     "nombre_articulo": nombre,
                     **rec,
                 })
