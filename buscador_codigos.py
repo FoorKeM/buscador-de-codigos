@@ -99,7 +99,7 @@ _RE_CODE_TOKEN = re.compile(r"[a-z0-9-]{3,}")  # valida cada trozo de codigo (le
 
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v126"
+APP_VERSION  = "v127"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -2271,13 +2271,6 @@ class SearchView(ttk.Frame):
         ttk.Button(btns, text="Buscar general", command=lambda: self.on_search(force_general=True)).pack(side=tk.LEFT, padx=4)
         ttk.Button(btns, text="Limpiar", command=self.on_clear).pack(side=tk.LEFT, padx=4)
         ttk.Button(btns, text="Copiar...", command=self.show_copy_menu).pack(side=tk.LEFT, padx=4)
-
-        ttk.Label(
-            content,
-            text="Haz clic en el ▸/▾ junto a un articulo con \U0001F7E2 para ver sus packs vinculados. "
-                 "Marca ☐ junto a un pack y usa Copiar → \"Copiar codigo pack\".",
-            foreground="#7A4E00",
-        ).grid(row=4, column=0, sticky="w", pady=(6, 0))
 
         # ttk.Treeview desplaza cada nivel hijo ("indent") bastante hacia la
         # derecha por defecto, asi que la casilla ☐ de un pack (nivel 1)
