@@ -99,7 +99,7 @@ _RE_CODE_TOKEN = re.compile(r"[a-z0-9-]{3,}")  # valida cada trozo de codigo (le
 
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v123"
+APP_VERSION  = "v124"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -513,6 +513,12 @@ def _reasonable_root_geometry(root, saved_geometry: str = "") -> str:
 class AutoDownloadError(Exception):
     pass
 
+class TivendoLoginError(AutoDownloadError):
+    """Fallo especificamente al iniciar sesion en Tivendo (usuario/clave
+    incorrectos), para poder distinguirlo de otros errores de descarga y
+    mostrar un mensaje mas claro + permitir volver a pedir la contraseña."""
+    pass
+
 def _clean_auto_download_dir(download_dir: Path = AUTO_DOWNLOAD_DIR) -> int:
     download_dir = Path(download_dir)
     download_dir.mkdir(parents=True, exist_ok=True)
@@ -668,7 +674,7 @@ async def _auto_login_tivendo(page, usuario: str, password: str):
         pass
     await _auto_wait_light(page)
     if "login" in page.url.lower():
-        raise AutoDownloadError("Login Tivendo fallido")
+        raise TivendoLoginError("Login Tivendo fallido")
     _auto_log("Login Tivendo exitoso")
 
 async def _auto_read_company(page) -> str:
@@ -3687,6 +3693,7 @@ class RootApp(tk.Tk):
                 self.after(0, done)
             except Exception as exc:
                 err = str(exc)
+                login_failed = isinstance(exc, TivendoLoginError)
 
                 def fail():
                     try:
@@ -3699,12 +3706,23 @@ class RootApp(tk.Tk):
                             self.start_view.btn_cargar_auto.config(state="normal")
                         except Exception:
                             pass
-                    messagebox.showerror(
-                        "Error en carga automática",
-                        "No se pudo completar la carga automática.\n"
-                        "No se cambió lo que ya estaba cargado.\n\n"
-                        f"Detalle: {err}",
-                    )
+                    if login_failed:
+                        # Borramos la contraseña guardada (mala) para que la
+                        # proxima vez _ask_auto_credentials() vuelva a pedirla
+                        # en vez de reintentar en silencio con la misma clave.
+                        save_auto_credentials(usuario, "")
+                        messagebox.showerror(
+                            "Fallo al iniciar sesión",
+                            "No se pudo iniciar sesión en Tivendo. Revisa la contraseña.\n\n"
+                            "La próxima vez que uses 'Cargar automático' se te pedirá que la ingreses de nuevo.",
+                        )
+                    else:
+                        messagebox.showerror(
+                            "Error en carga automática",
+                            "No se pudo completar la carga automática.\n"
+                            "No se cambió lo que ya estaba cargado.\n\n"
+                            f"Detalle: {err}",
+                        )
 
                 self.after(0, fail)
 
