@@ -99,7 +99,7 @@ _RE_CODE_TOKEN = re.compile(r"[a-z0-9-]{3,}")  # valida cada trozo de codigo (le
 
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v127"
+APP_VERSION  = "v128"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -325,6 +325,10 @@ except Exception:
     pass
 CACHE_DB_PATH = CACHE_DIR / "base_codigos_cache.pkl"
 CACHE_DB_META = CACHE_DIR / "base_codigos_cache_meta.json"
+PACKS_CACHE_PATH = CACHE_DIR / "packs_cache.pkl"
+PACKS_CACHE_META = CACHE_DIR / "packs_cache_meta.json"
+RANGES_CACHE_PATH = CACHE_DIR / "ranges_cache.pkl"
+RANGES_CACHE_META = CACHE_DIR / "ranges_cache_meta.json"
 BASE_DB_CACHE_DIR = CACHE_DIR / "bases_generadas"
 BASE_DB_CACHE_META = CACHE_DIR / "bases_generadas_meta.json"
 try:
@@ -1809,6 +1813,40 @@ def _norm_pack_code(value: str) -> str:
     return _RE_NON_ALNUM.sub("", s)
 
 
+def _load_cached_side_data(path: Path, cache_path: Path, cache_meta: Path, loader_fn):
+    """Envuelve `loader_fn(path)` (load_packs_data / load_price_ranges_data)
+    con un cache persistente en disco keyado por ruta+mtime, igual que
+    load_data() ya hace para la BASE DE DATOS principal. Si el archivo no
+    cambio desde la ultima vez (misma ruta, mismo mtime), se reusa el
+    resultado ya parseado en vez de volver a leer/parsear el Excel/HTML,
+    que es lo lento. Reabrir la app sin haber descargado un archivo nuevo
+    deberia sentirse instantaneo gracias a esto."""
+    try:
+        src_mtime = path.stat().st_mtime
+    except Exception:
+        src_mtime = None
+
+    try:
+        if cache_path.exists() and cache_meta.exists():
+            with open(cache_meta, "r", encoding="utf-8") as fh:
+                meta = json.load(fh)
+            if meta.get("src_path") == str(path) and meta.get("src_mtime") == src_mtime:
+                return pd.read_pickle(cache_path)
+    except Exception:
+        pass
+
+    result = loader_fn(path)
+
+    try:
+        pd.to_pickle(result, cache_path)
+        with open(cache_meta, "w", encoding="utf-8") as fh:
+            json.dump({"src_path": str(path), "src_mtime": src_mtime}, fh)
+    except Exception:
+        pass
+
+    return result
+
+
 def _find_pack_column(columns, wanted_names, fallback_idx=None):
     norm_map = {_normalize_text(c): c for c in columns}
     for name in wanted_names:
@@ -2902,11 +2940,15 @@ class SearchView(ttk.Frame):
 
         ins = self.tree.insert
         disp = self._display_emp
+        show_packs = self.by_packs.get()
         for ident, cod, nom, bi, be, eid, inp in zip(col_ident, col_codigo, col_nombre, col_bi, col_be, col_eid, col_inp):
             emp_txt = "" if nom == "No encontrado" else disp(eid)
             lookup_code = ident or cod
-            pack_records = [] if nom == "No encontrado" else self._pack_records_for_code(lookup_code)
-            if nom == "No encontrado":
+            # Si la casilla "Buscar código de pack" esta desmarcada, no se
+            # muestra nada de packs (ni la columna ni el acordeon): el
+            # usuario explicitamente no pidio esa busqueda.
+            pack_records = [] if (nom == "No encontrado" or not show_packs) else self._pack_records_for_code(lookup_code)
+            if nom == "No encontrado" or not show_packs:
                 pack_txt = ""
             elif pack_records:
                 pack_txt = f"🟢 Si ({len(pack_records)})"
@@ -3448,9 +3490,9 @@ class RootApp(tk.Tk):
             error = None
             try:
                 if needs_packs:
-                    packs_result = load_packs_data(self.packs_path)
+                    packs_result = _load_cached_side_data(self.packs_path, PACKS_CACHE_PATH, PACKS_CACHE_META, load_packs_data)
                 if needs_ranges:
-                    ranges_result = load_price_ranges_data(self.ranges_path)
+                    ranges_result = _load_cached_side_data(self.ranges_path, RANGES_CACHE_PATH, RANGES_CACHE_META, load_price_ranges_data)
             except Exception as exc:
                 error = exc
 
@@ -3629,9 +3671,9 @@ class RootApp(tk.Tk):
             try:
                 paths = asyncio.run(auto_download_articulos_packs_y_precios(usuario, password, set_status))
                 set_status("Procesando maestro de packs...")
-                packs_df, packs_index = load_packs_data(Path(paths["packs"]))
+                packs_df, packs_index = _load_cached_side_data(Path(paths["packs"]), PACKS_CACHE_PATH, PACKS_CACHE_META, load_packs_data)
                 set_status("Procesando lista de precios...")
-                ranges_df, ranges_index = load_price_ranges_data(Path(paths["precios"]))
+                ranges_df, ranges_index = _load_cached_side_data(Path(paths["precios"]), RANGES_CACHE_PATH, RANGES_CACHE_META, load_price_ranges_data)
                 result = {
                     "articulos": Path(paths["articulos"]),
                     "packs": Path(paths["packs"]),
@@ -3739,7 +3781,7 @@ class RootApp(tk.Tk):
 
         try:
             p = Path(path)
-            packs_df, packs_index = load_packs_data(p)
+            packs_df, packs_index = _load_cached_side_data(p, PACKS_CACHE_PATH, PACKS_CACHE_META, load_packs_data)
             self.packs_path = p
             self.packs_df = packs_df
             self.packs_index = packs_index
@@ -3778,7 +3820,7 @@ class RootApp(tk.Tk):
 
         try:
             p = Path(path)
-            ranges_df, ranges_index = load_price_ranges_data(p)
+            ranges_df, ranges_index = _load_cached_side_data(p, RANGES_CACHE_PATH, RANGES_CACHE_META, load_price_ranges_data)
             self.ranges_path = p
             self.ranges_df = ranges_df
             self.ranges_index = ranges_index
