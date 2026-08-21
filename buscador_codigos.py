@@ -99,7 +99,7 @@ _RE_CODE_TOKEN = re.compile(r"[a-z0-9-]{3,}")  # valida cada trozo de codigo (le
 
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v128"
+APP_VERSION  = "v129"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -1707,6 +1707,24 @@ def _score_results(df: pd.DataFrame, q_raw: str, q_ws: str, q_norm: str,
                   (df["barcode_externo"].str.strip() == q_ws)).values
             scores[bm & (scores == 0)] = 70
     else:
+        # Los codigos multi-parte a veces repiten el mismo numero con y sin
+        # cero(s) inicial(es) (ej. "058910/58910/66375": la misma pieza
+        # aparece como "058910" y como "58910"). En modo no-exacto, si el
+        # termino buscado es puramente numerico tambien se prueba la version
+        # sin ceros a la izquierda, para que "066375" encuentre "66375"
+        # igual que si se hubiera escrito sin el cero de mas.
+        q_alt = None
+        if q_ws_lc.isdigit():
+            stripped = q_ws_lc.lstrip("0")
+            # Se exige un minimo de 3 digitos restantes (mismo umbral que ya
+            # usa el resto de esta funcion para matches por substring) para
+            # no volver "000"/"0" en una busqueda que matchee casi cualquier
+            # codigo por tener un cero en algun lado.
+            if stripped and stripped != q_ws_lc and len(stripped) >= 3:
+                q_alt = stripped
+        needles_eq = {q_norm} if not q_alt else {q_norm, q_alt}
+        needles_contains = {n for n in needles_eq if len(n) >= 3}
+
         if by_tivendo:
             im_exact = (df["_identificador_ws"].str.lower() == q_ws_lc).values
             scores[im_exact] = 95
@@ -1721,25 +1739,35 @@ def _score_results(df: pd.DataFrame, q_raw: str, q_ws: str, q_norm: str,
         scores[m_exact] = 100
 
         m_starts = df["_codigo_lc"].str.startswith(q_ws_lc, na=False).values
+        if q_alt:
+            m_starts = m_starts | df["_codigo_lc"].str.startswith(q_alt, na=False).values
         scores[m_starts & (scores < 80)] = 80
 
-        if tok_index is not None and q_norm in tok_index:
-            tok_mask = df.index.isin(tok_index[q_norm])
-            scores[tok_mask & (scores < 60)] = 60
+        if tok_index is not None:
+            tok_positions = set()
+            for needle in needles_eq:
+                tok_positions.update(tok_index.get(needle, ()))
+            if tok_positions:
+                tok_mask = df.index.isin(tok_positions)
+                scores[tok_mask & (scores < 60)] = 60
         else:
             for i, toks in enumerate(df["_codigo_tokens_norm"]):
-                if scores[i] < 60 and any(tok == q_norm for tok in toks):
+                if scores[i] < 60 and any(tok in needles_eq for tok in toks):
                     scores[i] = 60
 
         m_code = df["_codigo_lc"].str.contains(re.escape(q_ws_lc), na=False).values
+        if q_alt:
+            m_code = m_code | df["_codigo_lc"].str.contains(re.escape(q_alt), na=False).values
         scores[m_code & (scores < 40)] = 40
 
-        if len(q_norm) >= 3:
+        if needles_contains:
             for i, toks in enumerate(df["_codigo_tokens_norm"]):
-                if scores[i] < 35 and any(q_norm in tok for tok in toks):
+                if scores[i] < 35 and any(any(n in tok for n in needles_contains) for tok in toks):
                     scores[i] = 35
 
         m_name = df["_nombre_lc"].str.contains(re.escape(q_name), na=False).values
+        if q_alt:
+            m_name = m_name | df["_nombre_lc"].str.contains(re.escape(q_alt), na=False).values
         scores[m_name & (scores < 20)] = 20
 
         if by_barras:
