@@ -99,7 +99,7 @@ _RE_CODE_TOKEN = re.compile(r"[a-z0-9-]{3,}")  # valida cada trozo de codigo (le
 
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v129"
+APP_VERSION  = "v130"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -2408,7 +2408,13 @@ class SearchView(ttk.Frame):
         self.tree.configure(yscroll=vsb2.set, xscroll=hsb2.set)
         self.tree.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=(8,10))
         vsb2.place(in_=self.tree, relx=1.0, rely=0, relheight=1.0, anchor="ne")
-        hsb2.place(in_=self.tree, relx=0, rely=1.0, relwidth=1.0, anchor="sw")
+        # hsb2 NO se superpone sobre el arbol (a diferencia de vsb2): un
+        # scrollbar horizontal ocupa casi el alto de una fila entera, y
+        # superponerlo sobre el borde inferior tapaba la ultima fila (no se
+        # podia ver ni hacer scroll hasta ella). Se empaqueta en su propio
+        # espacio justo debajo, con el mismo padx que la tabla para que sus
+        # bordes queden alineados con ella en vez de verse "suelto".
+        hsb2.pack(side=tk.BOTTOM, fill=tk.X, padx=10)
 
         self.var_status = tk.StringVar(value=self.status_db_text)
         lbl_status = ttk.Label(self, textvariable=self.var_status, anchor="w", cursor="hand2")
