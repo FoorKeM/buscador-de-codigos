@@ -99,7 +99,7 @@ _RE_CODE_TOKEN = re.compile(r"[a-z0-9-]{3,}")  # valida cada trozo de codigo (le
 
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v131"
+APP_VERSION  = "v132"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -773,7 +773,10 @@ async def _auto_open_pos(context, page):
         page,
         page.get_by_text("Punto de Ventas"),
     )
-    await pos_page.locator("text=Artículos").first.wait_for(state="visible", timeout=25000)
+    await _auto_retry(
+        "esperar menú 'Artículos' en Punto de Ventas",
+        lambda: pos_page.locator("text=Artículos").first.wait_for(state="visible", timeout=25000),
+    )
     return pos_page
 
 async def _auto_open_pos_section(pos_page, section_link, menu_text: str = "Artículos", timeout: int = 15000):
@@ -796,7 +799,10 @@ async def _auto_download_from_pos(pos_page, section_name: str, fallback_name: st
         wait=1.5,
     )
     await section_link.click()
-    await pos_page.get_by_role("button", name="Exportar").wait_for(state="visible", timeout=30000)
+    await _auto_retry(
+        "esperar botón 'Exportar'",
+        lambda: pos_page.get_by_role("button", name="Exportar").wait_for(state="visible", timeout=30000),
+    )
 
     async with pos_page.expect_download(timeout=300000) as download_info:
         await pos_page.get_by_role("button", name="Exportar").click()
@@ -874,7 +880,10 @@ async def _auto_click_classic_sales_report(page):
 
 async def _auto_click_lista_precios_tab(page):
     locator = page.locator("text=Lista de Precios").last
-    await locator.wait_for(state="visible", timeout=25000)
+    await _auto_retry(
+        "esperar pestaña 'Lista de Precios'",
+        lambda: locator.wait_for(state="visible", timeout=25000),
+    )
     await locator.scroll_into_view_if_needed()
 
     for action in (
