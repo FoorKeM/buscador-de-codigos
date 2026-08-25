@@ -99,7 +99,7 @@ _RE_CODE_TOKEN = re.compile(r"[a-z0-9-]{3,}")  # valida cada trozo de codigo (le
 
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v130"
+APP_VERSION  = "v131"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -776,10 +776,26 @@ async def _auto_open_pos(context, page):
     await pos_page.locator("text=Artículos").first.wait_for(state="visible", timeout=25000)
     return pos_page
 
+async def _auto_open_pos_section(pos_page, section_link, menu_text: str = "Artículos", timeout: int = 15000):
+    """Abre una sección del menú "Artículos" en el POS de Tivendo. Solo hace
+    clic en el menú si el enlace de la sección todavía no aparecio en el
+    DOM; si ya aparecio pero tarda en volverse visible (animación/carga
+    lenta), NO vuelve a hacer clic — es un menú tipo toggle, asi que un
+    segundo clic podria CERRARLO de nuevo justo cuando estaba a punto de
+    quedar listo."""
+    if await section_link.count() == 0:
+        await pos_page.locator(f"text={menu_text}").first.click()
+    await section_link.wait_for(state="visible", timeout=timeout)
+
 async def _auto_download_from_pos(pos_page, section_name: str, fallback_name: str, download_dir: Path) -> Path:
-    await pos_page.locator("text=Artículos").first.click()
-    await pos_page.get_by_role("link", name=section_name, exact=True).wait_for(state="visible", timeout=15000)
-    await pos_page.get_by_role("link", name=section_name, exact=True).click()
+    section_link = pos_page.get_by_role("link", name=section_name, exact=True)
+    await _auto_retry(
+        f"abrir sección '{section_name}' en Artículos",
+        lambda: _auto_open_pos_section(pos_page, section_link),
+        attempts=3,
+        wait=1.5,
+    )
+    await section_link.click()
     await pos_page.get_by_role("button", name="Exportar").wait_for(state="visible", timeout=30000)
 
     async with pos_page.expect_download(timeout=300000) as download_info:
