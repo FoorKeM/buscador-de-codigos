@@ -99,7 +99,7 @@ _RE_CODE_TOKEN = re.compile(r"[a-z0-9-]{3,}")  # valida cada trozo de codigo (le
 
 STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v132"
+APP_VERSION  = "v133"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -580,6 +580,7 @@ async def _auto_pause(seconds: float = 0.2):
     await asyncio.sleep(seconds)
 
 async def _auto_retry(name: str, action, attempts: int = 3, wait: float = 0.8):
+    start = asyncio.get_event_loop().time()
     last_error = None
     for attempt in range(1, attempts + 1):
         try:
@@ -590,7 +591,16 @@ async def _auto_retry(name: str, action, attempts: int = 3, wait: float = 0.8):
                 break
             _auto_log(f"Reintentando {name} ({attempt + 1}/{attempts})")
             await asyncio.sleep(wait)
-    raise last_error
+    elapsed = asyncio.get_event_loop().time() - start
+    # Envolvemos el error final con cuantos intentos hizo y cuanto tardo, para
+    # que el mensaje de error que ve el usuario ya no se vea IDENTICO a un
+    # fallo de un solo intento -- sin esto no habia forma de distinguir "se
+    # reintento 3 veces y aun asi Tivendo estuvo lento/caido" de "el
+    # reintento no se ejecuto de verdad".
+    raise AutoDownloadError(
+        f"{name}: sin éxito tras {attempts} intento(s) en {elapsed:.0f}s. "
+        f"Último error: {last_error}"
+    ) from last_error
 
 async def _auto_launch_browser(playwright, downloads_path: Path):
     kwargs = {
@@ -795,7 +805,7 @@ async def _auto_download_from_pos(pos_page, section_name: str, fallback_name: st
     await _auto_retry(
         f"abrir sección '{section_name}' en Artículos",
         lambda: _auto_open_pos_section(pos_page, section_link),
-        attempts=3,
+        attempts=4,
         wait=1.5,
     )
     await section_link.click()
