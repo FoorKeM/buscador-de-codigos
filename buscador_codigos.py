@@ -97,11 +97,87 @@ _RE_NON_ALNUM = re.compile(r"[^A-Z0-9]")    # elimina no-alfanuméricos (normali
 _RE_LAST_SPACED_DASH = re.compile(r"^.*\s-\s+(\S.*)$")  # separador real: "-" con espacio a ambos lados
 _RE_CODE_TOKEN = re.compile(r"[a-z0-9-]{3,}")  # valida cada trozo de codigo (letras/digitos/guiones internos)
 
-STRIPE_COLOR = "#f5f5f5"  # gris suave para franjas en Tivendo
+STRIPE_COLOR = "#F3F6FA"
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v133"
+APP_VERSION  = "v134"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
+
+UI = {
+    "background": "#F4F7FB", "surface": "#FFFFFF", "ink": "#17253C",
+    "muted": "#52647C", "border": "#D9E2ED", "primary": "#1557A0",
+    "primary_hover": "#0D467F", "success": "#176647", "warning": "#9A5B0C",
+    "danger": "#A6353E", "selected": "#DCEBFA",
+}
+
+
+def _configure_ui(root):
+    """Una sola configuración visual para todas las vistas ttk."""
+    style = ttk.Style(root)
+    if "clam" in style.theme_names():
+        style.theme_use("clam")
+    root.configure(background=UI["background"])
+    style.configure(".", font=("Segoe UI", 10), background=UI["background"], foreground=UI["ink"])
+    style.configure("TFrame", background=UI["background"])
+    style.configure("Card.TFrame", background=UI["surface"], borderwidth=1, relief="solid")
+    style.configure("TLabel", background=UI["background"], foreground=UI["ink"])
+    for name, color in (("Title", UI["ink"]), ("Section", UI["ink"]),
+                        ("Muted", UI["muted"]), ("Success", UI["success"]),
+                        ("Warning", UI["warning"]), ("Danger", UI["danger"])):
+        size = 19 if name == "Title" else 12 if name == "Section" else 10
+        weight = "bold" if name in {"Title", "Section"} else "normal"
+        style.configure(f"{name}.TLabel", font=("Segoe UI", size, weight), foreground=color)
+        style.configure(f"Card.{name}.TLabel", background=UI["surface"], foreground=color)
+    style.configure("Card.TLabel", background=UI["surface"])
+    style.configure("TButton", padding=(12, 7), background=UI["surface"],
+                    foreground=UI["ink"], bordercolor=UI["border"])
+    style.map("TButton", background=[("active", "#E9F1FA"), ("disabled", "#EFF2F6")],
+              foreground=[("disabled", "#8794A4")])
+    style.configure("Primary.TButton", background=UI["primary"], foreground="#FFFFFF",
+                    bordercolor=UI["primary"], padding=(14, 8))
+    style.map("Primary.TButton", background=[("active", UI["primary_hover"]),
+                                              ("disabled", "#AAB9CA")],
+              foreground=[("disabled", "#F7F9FC")])
+    style.configure("TEntry", fieldbackground=UI["surface"], padding=5)
+    style.configure("TCombobox", fieldbackground=UI["surface"], padding=5)
+    style.configure("TLabelframe", background=UI["background"], bordercolor=UI["border"], padding=10)
+    style.configure("TLabelframe.Label", background=UI["background"],
+                    foreground=UI["ink"], font=("Segoe UI", 10, "bold"))
+    style.configure("Treeview", background=UI["surface"], fieldbackground=UI["surface"],
+                    foreground=UI["ink"], rowheight=29, bordercolor=UI["border"], font=("Segoe UI", 10))
+    style.map("Treeview", background=[("selected", UI["selected"])],
+              foreground=[("selected", UI["ink"])])
+    style.configure("Treeview.Heading", background="#EAF0F7", foreground=UI["ink"],
+                    padding=(6, 7), font=("Segoe UI", 10, "bold"))
+    style.map("Treeview.Heading", background=[("active", "#DAE6F3")])
+    style.configure("TProgressbar", background=UI["primary"], troughcolor="#E3EBF4")
+
+
+def _style_text(widget):
+    widget.configure(font=("Segoe UI", 10), background=UI["surface"],
+                     foreground=UI["ink"], insertbackground=UI["ink"],
+                     selectbackground=UI["selected"], relief="solid", borderwidth=1,
+                     highlightthickness=1, highlightbackground=UI["border"],
+                     highlightcolor=UI["primary"], padx=8, pady=6)
+    return widget
+
+
+def _page_heading(parent, title, subtitle=""):
+    head = ttk.Frame(parent)
+    head.pack(fill="x", pady=(0, 12))
+    ttk.Label(head, text=title, style="Title.TLabel").pack(anchor="w")
+    if subtitle:
+        ttk.Label(head, text=subtitle, style="Muted.TLabel").pack(anchor="w", pady=(3, 0))
+    return head
+
+
+def _wizard_steps(parent, current, titles):
+    bar = ttk.Frame(parent)
+    bar.pack(fill="x", pady=(0, 12))
+    for index, title in enumerate(titles, 1):
+        style = "Section.TLabel" if index == current else "Muted.TLabel"
+        ttk.Label(bar, text=f"{index}. {title}", style=style).pack(side="left", padx=(0, 20))
+    return bar
 
 # Cache simple para evitar recargar la BASE DE DATOS desde disco en la misma sesión
 _LOAD_DATA_CACHE = {
@@ -2060,7 +2136,7 @@ def load_price_ranges_data(path: Path):
 
 
 class StartView(ttk.Frame):
-    """Pantalla de inicio SIN vista previa de proveedores."""
+    """Inicio con tareas principales y fuentes de datos claramente separadas."""
     def __init__(
         self,
         master,
@@ -2079,71 +2155,54 @@ class StartView(ttk.Frame):
     ):
         super().__init__(master)
         self.master.title("Buscador de Códigos — MERCADO HOUSE")
-        self.pack(fill="both", expand=True, padx=20, pady=20)
+        self.pack(fill="both", expand=True, padx=20, pady=16)
+        _page_heading(self, "Buscador de Códigos", "MERCADO HOUSE · Elige una tarea para comenzar")
 
-        title = ttk.Label(self, text="¿Qué deseas hacer?", font=("TkDefaultFont", 14, "bold"))
-        title.pack(pady=(0, 12))
+        tasks = ttk.Frame(self)
+        tasks.pack(fill="x")
+        tasks.columnconfigure(0, weight=1, uniform="tasks")
+        tasks.columnconfigure(1, weight=1, uniform="tasks")
 
-        btns = ttk.Frame(self)
-        btns.pack(pady=8)
+        def task(row, col, title, detail, command, primary=False):
+            card = ttk.Frame(tasks, style="Card.TFrame", padding=12)
+            card.grid(row=row, column=col, sticky="nsew", padx=(0, 8) if col == 0 else (8, 0), pady=5)
+            ttk.Label(card, text=title, style="Card.Section.TLabel").pack(anchor="w")
+            ttk.Label(card, text=detail, style="Card.Muted.TLabel", wraplength=420).pack(anchor="w", pady=(3, 8))
+            button = ttk.Button(card, text="Abrir", command=command,
+                                style="Primary.TButton" if primary else "TButton")
+            button.pack(anchor="w")
+            return button
 
-        # Guardamos referencias a los botones que dependen del listado
-        self.btn_buscar = ttk.Button(btns, text="Buscar Código", command=on_choose_db)
-        self.btn_buscar.pack(side="left", padx=8, ipadx=10, ipady=6)
+        self.btn_buscar = task(0, 0, "Buscar códigos", "Encuentra artículos, barras, packs y rangos.", on_choose_db, True)
+        self.btn_prov = task(0, 1, "Proveedores", "Consulta y administra los proveedores.", on_manage_prov)
+        self.btn_tivendo = task(1, 0, "Cambios masivos de precios", "Prepara precios y rangos para Tivendo.", on_open_tivendo)
+        self.btn_ingreso = task(1, 1, "Ingreso masivo de artículos", "Prepara nuevos artículos y revisa el Excel.", on_open_ingreso_masivo)
 
-        self.btn_prov = ttk.Button(btns, text="Administrar proveedores", command=on_manage_prov)
-        self.btn_prov.pack(side="left", padx=8, ipadx=10, ipady=6)
+        sources = ttk.LabelFrame(self, text="Datos cargados")
+        sources.pack(fill="x", pady=(14, 0))
+        sources.columnconfigure(0, weight=1)
 
-        self.btn_tivendo = ttk.Button(btns, text="CAMBIOS MASIVOS DE PRECIOS", command=on_open_tivendo)
-        self.btn_tivendo.pack(side="left", padx=8, ipadx=10, ipady=6)
+        def source(row, title, command):
+            line = ttk.Frame(sources)
+            line.grid(row=row, column=0, sticky="ew", pady=2)
+            line.columnconfigure(0, weight=1)
+            label = ttk.Label(line, text=title, style="Muted.TLabel")
+            label.grid(row=0, column=0, sticky="w")
+            button = ttk.Button(line, text="Elegir archivo", command=command)
+            button.grid(row=0, column=1, padx=(8, 0))
+            return label, button
 
-        self.btn_ingreso = ttk.Button(btns, text="INGRESO MASIVO DE ARTICULOS", command=on_open_ingreso_masivo)
-        self.btn_ingreso.pack(side="left", padx=8, ipadx=10, ipady=6)
-
-        # Botón central para cargar el listado al inicio
-        self.btn_cargar_listado = ttk.Button(
-            self,
-            text="Primero cargue el LISTADO DE ARTICULOS para usar el programa",
-            command=on_load_listado,
-        )
-        self.btn_cargar_listado.pack(pady=(18, 8))
-
-        self.btn_cargar_packs = ttk.Button(
-            self,
-            text="Cargar MAESTRO DE PACKS para ver packs vinculados",
-            command=on_load_packs,
-        )
-        self.btn_cargar_packs.pack(pady=(0, 8))
-
-        self.btn_cargar_rangos = ttk.Button(
-            self,
-            text="Cargar LISTA DE PRECIOS para ver rangos",
-            command=on_load_ranges,
-        )
-        self.btn_cargar_rangos.pack(pady=(0, 8))
-
-        self.btn_cargar_auto = ttk.Button(
-            self,
-            text="Cargar automático",
-            command=on_auto_load,
-        )
-        self.btn_cargar_auto.pack(pady=(0, 8))
-
-        # Etiqueta de estado + botones (delegado a set_listado_cargado)
-        self.lbl_estado = ttk.Label(self, text="", foreground="#555")
-        self.lbl_estado.pack(pady=(4, 0), anchor="w")
-        self.lbl_estado_packs = ttk.Label(self, text="", foreground="#555")
-        self.lbl_estado_packs.pack(pady=(2, 0), anchor="w")
-        self.lbl_estado_rangos = ttk.Label(self, text="", foreground="#555")
-        self.lbl_estado_rangos.pack(pady=(2, 0), anchor="w")
-        self.lbl_estado_auto = ttk.Label(self, text="", foreground="#555")
-        self.lbl_estado_auto.pack(pady=(2, 0), anchor="w")
+        self.lbl_estado, self.btn_cargar_listado = source(0, "Listado de artículos", on_load_listado)
+        self.lbl_estado_packs, self.btn_cargar_packs = source(1, "Maestro de packs", on_load_packs)
+        self.lbl_estado_rangos, self.btn_cargar_rangos = source(2, "Lista de precios", on_load_ranges)
 
         footer = ttk.Frame(self)
-        footer.pack(side="bottom", fill="x")
-        update_box = ttk.Frame(footer)
-        update_box.pack(side="right", anchor="e")
-        ttk.Label(update_box, text=f"Versión actual: {APP_VERSION}", foreground="#555").pack(side="left")
+        footer.pack(side="bottom", fill="x", pady=(12, 0))
+        ttk.Label(footer, text=f"Versión {APP_VERSION}", style="Muted.TLabel").pack(side="right")
+        self.btn_cargar_auto = ttk.Button(footer, text="Cargar automáticamente desde Tivendo", command=on_auto_load)
+        self.btn_cargar_auto.pack(side="left")
+        self.lbl_estado_auto = ttk.Label(footer, text="", style="Muted.TLabel")
+        self.lbl_estado_auto.pack(side="left", padx=14)
 
         self.set_listado_cargado(listado_cargado)
         self.set_packs_cargado(packs_cargado)
@@ -2152,8 +2211,8 @@ class StartView(ttk.Frame):
 
     @staticmethod
     def _estado_texto(cargado: bool) -> str:
-        return ("Listado de artículos: CARGADO" if cargado
-                else "Listado de artículos: NO cargado (los módulos que dependen de él están deshabilitados)")
+        return ("Listado de artículos · Listo" if cargado
+                else "Listado de artículos · Falta cargar (necesario para buscar y usar Tivendo)")
 
     def set_listado_cargado(self, cargado: bool):
         """Habilita/deshabilita los botones que necesitan el listado de artículos
@@ -2163,29 +2222,32 @@ class StartView(ttk.Frame):
         self.btn_tivendo.config(state=state_dep)
         self.btn_ingreso.config(state=state_dep)
         try:
-            self.lbl_estado.config(text=self._estado_texto(cargado))
+            self.lbl_estado.config(text=self._estado_texto(cargado),
+                                   style="Success.TLabel" if cargado else "Warning.TLabel")
         except Exception:
             pass
 
     @staticmethod
     def _estado_packs_texto(cargado: bool) -> str:
-        return ("Maestro de packs: CARGADO" if cargado
-                else "Maestro de packs: NO cargado (el buscador no mostrara packs vinculados)")
+        return ("Maestro de packs · Listo" if cargado
+                else "Maestro de packs · Opcional, permite ver packs vinculados")
 
     def set_packs_cargado(self, cargado: bool):
         try:
-            self.lbl_estado_packs.config(text=self._estado_packs_texto(cargado))
+            self.lbl_estado_packs.config(text=self._estado_packs_texto(cargado),
+                                         style="Success.TLabel" if cargado else "Muted.TLabel")
         except Exception:
             pass
 
     @staticmethod
     def _estado_rangos_texto(cargado: bool) -> str:
-        return ("Lista de precios/rangos: CARGADA" if cargado
-                else "Lista de precios/rangos: NO cargada")
+        return ("Lista de precios y rangos · Lista" if cargado
+                else "Lista de precios y rangos · Opcional")
 
     def set_ranges_cargado(self, cargado: bool):
         try:
-            self.lbl_estado_rangos.config(text=self._estado_rangos_texto(cargado))
+            self.lbl_estado_rangos.config(text=self._estado_rangos_texto(cargado),
+                                          style="Success.TLabel" if cargado else "Muted.TLabel")
         except Exception:
             pass
 
@@ -2203,12 +2265,15 @@ class ProvidersView(ttk.Frame):
     def __init__(self, master, go_home_cb):
         super().__init__(master)
         self.master.title("Administrar proveedores")
-        self.pack(fill="both", expand=True, padx=12, pady=12)
+        self.pack(fill="both", expand=True, padx=16, pady=14)
         self.go_home_cb = go_home_cb
         self.data: Dict[int,str] = load_empresas()
 
         top = ttk.Frame(self); top.pack(fill="x")
-        ttk.Button(top, text="⟵ Volver al inicio", command=self._back_home).pack(side="left")
+        ttk.Button(top, text="← Inicio", command=self._back_home).pack(side="left")
+        ttk.Label(top, text="Proveedores", style="Title.TLabel").pack(side="left", padx=16)
+        ttk.Label(self, text="Selecciona un proveedor para editarlo, o pulsa Nuevo para agregar uno.",
+                  style="Muted.TLabel").pack(anchor="w", pady=(5, 0))
 
         mid = ttk.Frame(self); mid.pack(fill="both", expand=True, pady=8)
         self.tree = ttk.Treeview(mid, columns=("id","nombre"), show="headings", selectmode="browse", height=20)
@@ -2218,7 +2283,7 @@ class ProvidersView(ttk.Frame):
         self.tree.pack(side="left", fill="both", expand=True); vsb.pack(side="right", fill="y")
         self.tree.bind("<<TreeviewSelect>>", self.on_select)
 
-        form = ttk.LabelFrame(self, text="Editar / Agregar"); form.pack(fill="x", pady=6)
+        form = ttk.LabelFrame(self, text="Datos del proveedor"); form.pack(fill="x", pady=6)
         row = ttk.Frame(form); row.pack(fill="x", pady=4, padx=8)
         ttk.Label(row, text="Id:").pack(side="left")
         self.ent_id = ttk.Entry(row, width=12); self.ent_id.pack(side="left", padx=(4,10))
@@ -2226,11 +2291,19 @@ class ProvidersView(ttk.Frame):
         self.ent_nombre = ttk.Entry(row); self.ent_nombre.pack(side="left", fill="x", expand=True, padx=(4,10))
 
         actions = ttk.Frame(form); actions.pack(fill="x", pady=4, padx=8)
-        ttk.Button(actions, text="Guardar / Actualizar", command=self.save_item).pack(side="left", padx=4)
+        ttk.Button(actions, text="Guardar proveedor", command=self.save_item,
+                   style="Primary.TButton").pack(side="left", padx=4)
         ttk.Button(actions, text="Nuevo", command=self.clear_form).pack(side="left", padx=4)
         ttk.Button(actions, text="Eliminar", command=self.delete_item).pack(side="left", padx=4)
 
-        self.status = ttk.Label(self, text="", foreground="#666"); self.status.pack(fill="x", pady=(4,0))
+        self.status = ttk.Label(self, text="", style="Success.TLabel")
+        # El formulario debe seguir visible cuando la tabla se contrae en
+        # ventanas pequeñas; reservar su espacio antes de expandir la tabla.
+        mid.pack_forget()
+        form.pack_forget()
+        self.status.pack(side="bottom", fill="x", pady=(4, 0))
+        form.pack(side="bottom", fill="x", pady=6)
+        mid.pack(side="top", fill="both", expand=True, pady=8)
         self.reload()
 
     def _back_home(self):
@@ -2318,20 +2391,22 @@ class SearchView(ttk.Frame):
 
         self.last_results = pd.DataFrame()
 
-        # ===== Barra superior SOLO con "Volver" =====
-        header = ttk.Frame(self, padding=(10,10,10,0))
+        header = ttk.Frame(self, padding=(16, 14, 16, 0))
         header.pack(side=tk.TOP, fill=tk.X)
-        ttk.Button(header, text="Volver al Menú", command=self._back_home).pack(side="left")
+        ttk.Button(header, text="← Inicio", command=self._back_home).pack(side="left")
+        ttk.Label(header, text="Buscar códigos", style="Title.TLabel").pack(side="left", padx=16)
 
         # ===== Contenido del buscador =====
-        content = ttk.Frame(self, padding=10)
+        content = ttk.Frame(self, padding=(16, 8, 16, 4))
         content.pack(side=tk.TOP, fill=tk.X)
         content.columnconfigure(0, weight=1)
 
-        ttk.Label(content, text="Código(s) (pega varios: uno por línea o separados por coma/tab):").grid(row=0, column=0, sticky="w")
-        area = ttk.Frame(content); area.grid(row=1, column=0, sticky="ew", pady=(4,0))
+        ttk.Label(content, text="1. Escribe o pega los códigos", style="Section.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(content, text="Un código por línea. Los guiones y espacios internos forman parte del código.",
+                  style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(2, 0))
+        area = ttk.Frame(content); area.grid(row=2, column=0, sticky="ew", pady=(5,0))
         area.columnconfigure(0, weight=1)
-        self.txt_query = tk.Text(area, height=5, wrap="word")
+        self.txt_query = _style_text(tk.Text(area, height=4, wrap="word"))
         self.txt_query.grid(row=0, column=0, sticky="nsew")
         vsb = ttk.Scrollbar(area, orient="vertical", command=self.txt_query.yview)
         vsb.grid(row=0, column=1, sticky="ns")
@@ -2339,7 +2414,8 @@ class SearchView(ttk.Frame):
         self.txt_query.bind("<Button-3>", self.show_query_context_menu)
         self.txt_query.bind("<Button-2>", self.show_query_context_menu)
 
-        opts = ttk.Frame(content); opts.grid(row=2, column=0, sticky="w", pady=(6,0))
+        ttk.Label(content, text="2. Ajusta los filtros", style="Section.TLabel").grid(row=3, column=0, sticky="w", pady=(10, 2))
+        opts = ttk.Frame(content); opts.grid(row=4, column=0, sticky="w", pady=(2,0))
         self.exact = tk.BooleanVar(value=True)
         self.by_barras = tk.BooleanVar(value=False)
         self.by_tivendo = tk.BooleanVar(value=False)
@@ -2349,13 +2425,13 @@ class SearchView(ttk.Frame):
         ttk.Checkbutton(opts, text="Buscar por código Tivendo", variable=self.by_tivendo).pack(side="left", padx=(12,0))
         ttk.Checkbutton(opts, text="Buscar código de pack", variable=self.by_packs).pack(side="left", padx=(12,0))
 
-        row3 = ttk.Frame(content); row3.grid(row=3, column=0, sticky="w", pady=(8,0))
-        ttk.Label(row3, text="Empresa:").pack(side="left")
+        row3 = ttk.Frame(content); row3.grid(row=5, column=0, sticky="ew", pady=(8,0))
+        ttk.Label(row3, text="Proveedor:").pack(side="left")
         self.var_emp = tk.StringVar()
 
         # Filtro en vivo de proveedores (mini buscador)
         self.var_emp_search = tk.StringVar()
-        ttk.Label(row3, text="Buscar:").pack(side="left", padx=(8, 2))
+        ttk.Label(row3, text="Filtrar lista:").pack(side="left", padx=(8, 2))
         ent_emp = ttk.Entry(row3, textvariable=self.var_emp_search, width=22)
         ent_emp.pack(side="left")
         ent_emp.bind("<KeyRelease>", self.on_emp_search)
@@ -2366,12 +2442,20 @@ class SearchView(ttk.Frame):
         self.cbo_emp.set("— Cualquiera —")
         self.cbo_emp.bind("<Key>", self.on_emp_key)
 
-        btns = ttk.Frame(row3)
-        btns.pack(side="left")
-        ttk.Button(btns, text="Buscar por Proveedor", command=self.on_search).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btns, text="Buscar general", command=lambda: self.on_search(force_general=True)).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btns, text="Limpiar", command=self.on_clear).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btns, text="Copiar...", command=self.show_copy_menu).pack(side=tk.LEFT, padx=4)
+        btns = ttk.Frame(content)
+        btns.grid(row=6, column=0, sticky="ew", pady=(10, 2))
+        ttk.Button(btns, text="Buscar con proveedor", command=self.on_search,
+                   style="Primary.TButton").pack(side="left")
+        ttk.Button(btns, text="Buscar en todos", command=lambda: self.on_search(force_general=True)).pack(side="left", padx=6)
+        ttk.Button(btns, text="Limpiar", command=self.on_clear).pack(side="left")
+        ttk.Button(btns, text="Copiar...", command=self.show_copy_menu).pack(side="right")
+        ttk.Button(btns, text="Exportar CSV", command=self.export_csv).pack(side="right", padx=6)
+
+        results_head = ttk.Frame(self, padding=(16, 5, 16, 0))
+        results_head.pack(fill="x")
+        ttk.Label(results_head, text="3. Revisa los resultados", style="Section.TLabel").pack(side="left")
+        self.var_result_count = tk.StringVar(value="Aún no hay búsqueda")
+        ttk.Label(results_head, textvariable=self.var_result_count, style="Muted.TLabel").pack(side="right")
 
         # ttk.Treeview desplaza cada nivel hijo ("indent") bastante hacia la
         # derecha por defecto, asi que la casilla ☐ de un pack (nivel 1)
@@ -2414,7 +2498,7 @@ class SearchView(ttk.Frame):
             anchor = "center" if c in {"packs", "rango1", "rango2"} else "w"
             self.tree.column(c, width=min_width, minwidth=min_width, anchor=anchor, stretch=False)
         self.tree.tag_configure("dup_input", background="#FFF3CD")
-        self.tree.tag_configure("pack_row", background="#F1F1FB")
+        self.tree.tag_configure("pack_row", background="#EAF2FB")
 
         # ---- Acordeon de packs vinculados ----
         # _row_lookup_code: iid de articulo -> codigo/identificador con el que
@@ -2441,7 +2525,7 @@ class SearchView(ttk.Frame):
         vsb2 = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
         hsb2 = ttk.Scrollbar(self, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscroll=vsb2.set, xscroll=hsb2.set)
-        self.tree.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=(8,10))
+        self.tree.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=16, pady=(4, 0))
         vsb2.place(in_=self.tree, relx=1.0, rely=0, relheight=1.0, anchor="ne")
         # hsb2 NO se superpone sobre el arbol (a diferencia de vsb2): un
         # scrollbar horizontal ocupa casi el alto de una fila entera, y
@@ -2449,11 +2533,12 @@ class SearchView(ttk.Frame):
         # podia ver ni hacer scroll hasta ella). Se empaqueta en su propio
         # espacio justo debajo, con el mismo padx que la tabla para que sus
         # bordes queden alineados con ella en vez de verse "suelto".
-        hsb2.pack(side=tk.BOTTOM, fill=tk.X, padx=10)
+        hsb2.pack(side=tk.BOTTOM, fill=tk.X, padx=16)
 
         self.var_status = tk.StringVar(value=self.status_db_text)
-        lbl_status = ttk.Label(self, textvariable=self.var_status, anchor="w", cursor="hand2")
-        lbl_status.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=5)
+        lbl_status = ttk.Label(self, textvariable=self.var_status, anchor="w", cursor="hand2",
+                               style="Muted.TLabel")
+        lbl_status.pack(side=tk.BOTTOM, fill=tk.X, padx=16, pady=5)
         lbl_status.bind("<Button-1>", lambda e: self.on_change_db())  # click para cambiar BD
 
         self._context_column = None
@@ -2717,6 +2802,7 @@ class SearchView(ttk.Frame):
         self.cbo_emp.set("— Cualquiera —")
         for x in self.tree.get_children(): self.tree.delete(x)
         self.var_status.set(self.status_db_text)
+        self.var_result_count.set("Aún no hay búsqueda")
         self.last_results = pd.DataFrame()
 
     def _selected_emp_id(self):
@@ -2983,6 +3069,7 @@ class SearchView(ttk.Frame):
         """Rellena el Treeview con los resultados de búsqueda y actualiza la barra de estado."""
         for x in self.tree.get_children(): self.tree.delete(x)
         total = len(df)
+        self.var_result_count.set(f"{total} fila(s) · {not_found_count} no encontrado(s)")
 
         # Cada busqueda nueva reinicia el estado del acordeon de packs (los
         # hijos ya cargados se borraron junto con las filas padre arriba).
@@ -3365,14 +3452,12 @@ class AutoBuildDBWindow(tk.Toplevel):
 
         self.grab_set()  # bloquear interacción con la ventana principal mientras trabaja
 
-        frm = ttk.Frame(self, padding=16)
+        frm = ttk.Frame(self, padding=20)
         frm.pack(fill="both", expand=True)
 
-        ttk.Label(
-            frm,
-            text=f"Generando BASE DE DATOS desde:\n{listado_path.name}",
-            justify="left"
-        ).pack(anchor="w")
+        ttk.Label(frm, text="Preparando el buscador", style="Section.TLabel").pack(anchor="w")
+        ttk.Label(frm, text=f"Creando la base de datos desde {listado_path.name}",
+                  style="Muted.TLabel").pack(anchor="w", pady=(4, 0))
 
         frm_bar = ttk.Frame(frm)
         frm_bar.pack(fill="x", pady=(12, 4))
@@ -3383,7 +3468,7 @@ class AutoBuildDBWindow(tk.Toplevel):
         self.lbl_pct = ttk.Label(frm_bar, text="0%")
         self.lbl_pct.pack(side="left", padx=(8, 0))
 
-        self.lbl_status = ttk.Label(frm, text="Preparando…", foreground="#555")
+        self.lbl_status = ttk.Label(frm, text="Preparando…", style="Muted.TLabel")
         self.lbl_status.pack(anchor="w", pady=(4, 0))
 
         # Ajuste tamaño aproximado
@@ -3459,6 +3544,7 @@ class AutoBuildDBWindow(tk.Toplevel):
 class RootApp(tk.Tk):
     def __init__(self):
         super().__init__()
+        _configure_ui(self)
         # Restaurar tamaño/posición si existe en prefs
         prefs = load_prefs()
         geom = prefs.get("geometry")
@@ -3537,12 +3623,15 @@ class RootApp(tk.Tk):
 
         progress = tk.Toplevel(self)
         progress.title("Cargando datos")
+        progress.configure(background=UI["background"])
         progress.resizable(False, False)
         progress.transient(self)
         progress.grab_set()
-        frm = ttk.Frame(progress, padding=16)
+        frm = ttk.Frame(progress, padding=20)
         frm.pack(fill="both", expand=True)
-        ttk.Label(frm, text="Cargando maestro de packs y lista de precios…").pack(anchor="w")
+        ttk.Label(frm, text="Preparando datos complementarios", style="Section.TLabel").pack(anchor="w")
+        ttk.Label(frm, text="Cargando maestro de packs y lista de precios…",
+                  style="Muted.TLabel").pack(anchor="w", pady=(4, 0))
         pb = ttk.Progressbar(frm, mode="indeterminate", length=320)
         pb.pack(fill="x", pady=(10, 0))
         pb.start(10)
@@ -3625,14 +3714,15 @@ class RootApp(tk.Tk):
 
         dialog = tk.Toplevel(self)
         dialog.title("Carga automática")
+        dialog.configure(background=UI["background"])
         dialog.transient(self)
         dialog.grab_set()
         dialog.resizable(False, False)
 
-        frame = ttk.Frame(dialog, padding=16)
+        frame = ttk.Frame(dialog, padding=20)
         frame.pack(fill="both", expand=True)
 
-        ttk.Label(frame, text="Credenciales de Tivendo", font=("TkDefaultFont", 10, "bold")).grid(
+        ttk.Label(frame, text="Conectar con Tivendo", style="Section.TLabel").grid(
             row=0, column=0, columnspan=2, sticky="w", pady=(0, 10)
         )
 
@@ -3655,7 +3745,7 @@ class RootApp(tk.Tk):
         note = ttk.Label(
             frame,
             text="Estos datos se guardan localmente: la próxima vez no se volverán a pedir.",
-            foreground="#555",
+            style="Muted.TLabel",
             wraplength=360,
         )
         note.grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 12))
@@ -3678,7 +3768,8 @@ class RootApp(tk.Tk):
         buttons = ttk.Frame(frame)
         buttons.grid(row=4, column=0, columnspan=3, sticky="e")
         ttk.Button(buttons, text="Cancelar", command=cancel).pack(side="left", padx=(0, 8))
-        ttk.Button(buttons, text="Cargar automático", command=accept).pack(side="left")
+        ttk.Button(buttons, text="Cargar automáticamente", command=accept,
+                   style="Primary.TButton").pack(side="left")
 
         dialog.protocol("WM_DELETE_WINDOW", cancel)
         dialog.bind("<Return>", lambda _e: accept())
@@ -3706,13 +3797,16 @@ class RootApp(tk.Tk):
 
         progress = tk.Toplevel(self)
         progress.title("Carga automática")
+        progress.configure(background=UI["background"])
         progress.transient(self)
         progress.resizable(False, False)
-        box = ttk.Frame(progress, padding=16)
+        box = ttk.Frame(progress, padding=20)
         box.pack(fill="both", expand=True)
-        ttk.Label(box, text="Descargando artículos, packs y precios...", font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
+        ttk.Label(box, text="Descargando datos de Tivendo", style="Section.TLabel").pack(anchor="w")
+        ttk.Label(box, text="Artículos, packs y precios", style="Muted.TLabel").pack(anchor="w", pady=(4, 0))
         status_var = tk.StringVar(value="Preparando...")
-        ttk.Label(box, textvariable=status_var, width=54, wraplength=420).pack(anchor="w", pady=(10, 8))
+        ttk.Label(box, textvariable=status_var, width=54, wraplength=420,
+                  style="Muted.TLabel").pack(anchor="w", pady=(10, 8))
         pb = ttk.Progressbar(box, mode="indeterminate", length=360)
         pb.pack(fill="x")
         pb.start(10)
@@ -4050,14 +4144,15 @@ class TivendoWindow(ttk.Frame):
         self.pack(fill="both", expand=True)
         self.go_home_cb = go_home_cb
 
-        top = ttk.Frame(self)
+        top = ttk.Frame(self, padding=(16, 12, 16, 4))
         top.pack(fill="x")
         # Botón para volver al menú principal sin usar métodos adicionales
         ttk.Button(
             top,
-            text="⟵ Volver al inicio",
+            text="← Inicio",
             command=lambda: (self.destroy(), self.go_home_cb() if callable(self.go_home_cb) else None),
-        ).pack(side="left", padx=5, pady=5)
+        ).pack(side="left")
+        ttk.Label(top, text="Cambios masivos de precios", style="Title.TLabel").pack(side="left", padx=16)
 
         self.path_listado = None
         self.df_map = None
@@ -4092,10 +4187,11 @@ class TivendoWindow(ttk.Frame):
 
     def _build_stepA_select_listado(self):
         f = self.stepA = ttk.Frame(self, padding=16)
+        _wizard_steps(f, 1, ("Listado", "Pegar precios", "Revisar y exportar"))
         ttk.Label(
             f,
-            text="Paso 1: Listado de artículos ya cargado desde el menú principal",
-            font=("Segoe UI", 12, "bold"),
+            text="Listado de artículos",
+            style="Section.TLabel",
         ).pack(anchor="w")
         ttk.Label(
             f,
@@ -4222,23 +4318,26 @@ class TivendoWindow(ttk.Frame):
 
     def _build_stepB_paste(self):
         f = self.stepB = ttk.Frame(self, padding=16)
-        ttk.Label(f, text="Paso 2: Pega 'Códigos de barra internos' y 'Precios' (uno por línea, mismo orden)",
-                  font=("Segoe UI", 12, "bold")).pack(anchor="w")
+        _wizard_steps(f, 2, ("Listado", "Pegar precios", "Revisar y exportar"))
+        ttk.Label(f, text="Pega los códigos y precios", style="Section.TLabel").pack(anchor="w")
+        ttk.Label(f, text="Un dato por línea en cada columna. La primera línea de códigos corresponde a la primera de precios.",
+                  style="Muted.TLabel").pack(anchor="w", pady=(3, 0))
 
         cont = ttk.Frame(f); cont.pack(fill="both", expand=True, pady=12)
         left = ttk.Frame(cont); left.pack(side="left", fill="both", expand=True, padx=(0,8))
         right = ttk.Frame(cont); right.pack(side="left", fill="both", expand=True, padx=(8,0))
 
         ttk.Label(left, text="Códigos de barra internos (uno por línea)").pack(anchor="w")
-        self.txt_cod = tk.Text(left, height=20, wrap="none"); self.txt_cod.pack(fill="both", expand=True)
+        self.txt_cod = _style_text(tk.Text(left, height=20, wrap="none")); self.txt_cod.pack(fill="both", expand=True)
 
         ttk.Label(right, text="Precios (uno por línea)").pack(anchor="w")
-        self.txt_prec = tk.Text(right, height=20, wrap="none"); self.txt_prec.pack(fill="both", expand=True)
+        self.txt_prec = _style_text(tk.Text(right, height=20, wrap="none")); self.txt_prec.pack(fill="both", expand=True)
 
         bar = ttk.Frame(f); bar.pack(fill="x")
         ttk.Button(bar, text="Limpiar", command=lambda:(self.txt_cod.delete("1.0","end"), self.txt_prec.delete("1.0","end"))).pack(side="left")
         ttk.Button(bar, text="← Volver", command=lambda:self._show(self.stepA)).pack(side="left", padx=8)
-        ttk.Button(bar, text="Siguiente →", command=self._build_preview_from_paste).pack(side="right")
+        ttk.Button(bar, text="Revisar datos →", command=self._build_preview_from_paste,
+                   style="Primary.TButton").pack(side="right")
 
     def _read_pasted_lists(self):
         codes = [l.strip() for l in self.txt_cod.get("1.0","end").splitlines() if l.strip()]
@@ -4272,7 +4371,10 @@ class TivendoWindow(ttk.Frame):
 
     def _build_stepC_preview(self):
         f = self.stepC = ttk.Frame(self, padding=16)
-        ttk.Label(f, text="Paso 3: Vista previa, asigna rangos y genera el archivo", font=("Segoe UI", 12, "bold")).pack(anchor="w")
+        _wizard_steps(f, 3, ("Listado", "Pegar precios", "Revisar y exportar"))
+        ttk.Label(f, text="Revisa los artículos y genera el archivo", style="Section.TLabel").pack(anchor="w")
+        ttk.Label(f, text="Las filas rojas no se encontraron en el listado. Puedes editar precios con doble clic.",
+                  style="Muted.TLabel").pack(anchor="w", pady=(3, 0))
 
         # ---- Filtro rápido
         filter_bar = ttk.Frame(f); filter_bar.pack(fill="x", pady=(4,6))
@@ -4312,11 +4414,21 @@ class TivendoWindow(ttk.Frame):
         self.tree.configure(yscrollcommand=vsb.set)
         vsb.pack(side="left", fill="y")
 
-        self.tree.tag_configure("nofound", background="#ffecec")
+        self.tree.tag_configure("nofound", background="#FDEBEC")
         self.tree.tag_configure("stripe0", background="")
         self.tree.tag_configure("stripe1", background=STRIPE_COLOR)
 
-        side = ttk.Frame(body, padding=(12,0,0,0)); side.pack(side="left", fill="y")
+        side_shell = ttk.Frame(body, padding=(10, 0, 0, 0))
+        side_shell.pack(side="left", fill="y")
+        side_canvas = tk.Canvas(side_shell, width=228, background=UI["background"],
+                                highlightthickness=0, borderwidth=0)
+        side_canvas.pack(side="left", fill="y")
+        side_scroll = ttk.Scrollbar(side_shell, orient="vertical", command=side_canvas.yview)
+        side_scroll.pack(side="left", fill="y")
+        side_canvas.configure(yscrollcommand=side_scroll.set)
+        side = ttk.Frame(side_canvas)
+        side_canvas.create_window((0, 0), window=side, anchor="nw")
+        side.bind("<Configure>", lambda _e: side_canvas.configure(scrollregion=side_canvas.bbox("all")))
 
         sw = ttk.Checkbutton(side, text="Habilitar Rango 2 (opcional)", variable=self.enable_r2, command=self._toggle_r2)
         sw.pack(anchor="w", pady=(0,6))
@@ -4361,7 +4473,25 @@ class TivendoWindow(ttk.Frame):
         bottom = ttk.Frame(f); bottom.pack(fill="x", pady=(8,0))
         self.lbl_info = ttk.Label(bottom, text="", foreground="#555"); self.lbl_info.pack(side="left")
         ttk.Button(bottom, text="← Volver a pegar", command=lambda:self._show(self.stepB)).pack(side="right", padx=8)
-        ttk.Button(bottom, text="Generar archivo...", command=self._export).pack(side="right")
+        ttk.Button(bottom, text="Generar Excel", command=self._export,
+                   style="Primary.TButton").pack(side="right")
+
+        # Las columnas de la vista previa exceden el ancho de una pantalla.
+        # Reservar primero espacio para acciones y controles laterales evita
+        # que Treeview los empuje fuera de la ventana mínima.
+        hsb = ttk.Scrollbar(f, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(xscrollcommand=hsb.set)
+        bottom.pack_forget()
+        body.pack_forget()
+        bottom.pack(side="bottom", fill="x", pady=(8, 0))
+        hsb.pack(side="bottom", fill="x", pady=(2, 0))
+        body.pack(side="top", fill="both", expand=True, pady=(8, 0))
+        self.tree.pack_forget()
+        vsb.pack_forget()
+        side_shell.pack_forget()
+        side_shell.pack(side="right", fill="y")
+        vsb.pack(side="right", fill="y")
+        self.tree.pack(side="left", fill="both", expand=True)
 
         self._toggle_r2(initial=True)
 
@@ -4694,9 +4824,10 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         self.text_codint = None
         self.text_codext = None
 
-        top = ttk.Frame(self)
+        top = ttk.Frame(self, padding=(16, 12, 16, 4))
         top.pack(fill="x")
-        ttk.Button(top, text="⟵ Volver al inicio", command=self._back_home).pack(side="left", padx=5, pady=5)
+        ttk.Button(top, text="← Inicio", command=self._back_home).pack(side="left")
+        ttk.Label(top, text="Ingreso masivo de artículos", style="Title.TLabel").pack(side="left", padx=16)
 
         self.container = ttk.Frame(self)
         self.container.pack(fill="both", expand=True)
@@ -4721,15 +4852,18 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
                 pass
 
     def _crear_paso1(self):
+        _wizard_steps(self.frame_paso1, 1, ("Configurar", "Pegar artículos", "Revisar y exportar"))
         lbl_titulo = ttk.Label(
             self.frame_paso1,
-            text="PASO 1: Configura el código inicial y el proveedor.",
-            font=("", 11, "bold"),
+            text="Configura el código inicial y el proveedor",
+            style="Section.TLabel",
             wraplength=1150,
             justify="left",
         )
         lbl_titulo.pack(fill="x", padx=10, pady=(10, 5))
 
+        ttk.Label(self.frame_paso1, text="Ejemplo de código inicial: A020267. El programa continuará la numeración automáticamente.",
+                  style="Muted.TLabel").pack(anchor="w", padx=10)
         frame_conf = ttk.LabelFrame(self.frame_paso1, text="Configuración general")
         frame_conf.pack(fill="x", padx=10, pady=5)
 
@@ -4763,13 +4897,14 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         self.var_empresa_search_p1 = tk.StringVar()
         entry_buscar = ttk.Entry(frame_conf, textvariable=self.var_empresa_search_p1, width=20)
         # Lo ubicamos a la derecha del combobox de proveedor
-        entry_buscar.grid(row=0, column=4, padx=5, pady=5, sticky="w")
+        entry_buscar.grid(row=1, column=3, padx=5, pady=5, sticky="w")
+        ttk.Label(frame_conf, text="Filtrar proveedores:").grid(row=1, column=2, padx=5, pady=5, sticky="e")
         entry_buscar.bind("<KeyRelease>", self._on_empresa_search_p1)
 
         btn_instrucciones = ttk.Button(
             frame_conf, text="Ver instrucciones", command=self._abrir_instrucciones
         )
-        btn_instrucciones.grid(row=0, column=5, padx=10, pady=5, sticky="w")
+        btn_instrucciones.grid(row=1, column=1, padx=10, pady=5, sticky="w")
 
         # Información sobre el catálogo utilizado para validar códigos
         frame_cat = ttk.LabelFrame(
@@ -4795,7 +4930,8 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         btn_anterior_p1 = ttk.Button(frame_nav, text="← Anterior", state="disabled")
         btn_anterior_p1.pack(side="left")
 
-        btn_siguiente = ttk.Button(frame_nav, text="Siguiente →", command=self._ir_a_paso2)
+        btn_siguiente = ttk.Button(frame_nav, text="Pegar artículos →", command=self._ir_a_paso2,
+                                  style="Primary.TButton")
         btn_siguiente.pack(side="right")
 
     def _on_empresa_search_p1(self, event=None):
@@ -4808,17 +4944,18 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         )
 
     def _crear_paso2(self):
+        _wizard_steps(self.frame_paso2, 2, ("Configurar", "Pegar artículos", "Revisar y exportar"))
         lbl_titulo = ttk.Label(
             self.frame_paso2,
-            text=(
-                "PASO 2: Ingreso masivo de artículos pegando columnas.\n"
-                "Pega los datos directamente en los recuadros: Nombre, Precio, Código barra interno y externo."
-            ),
-            font=("", 11, "bold"),
+            text="Pega los datos de los artículos",
+            style="Section.TLabel",
             wraplength=1150,
             justify="left"
         )
         lbl_titulo.pack(fill="x", padx=10, pady=(10, 5))
+        ttk.Label(self.frame_paso2,
+                  text="Cada línea es un artículo. Mantén el mismo orden en las cuatro columnas; la barra externa es opcional.",
+                  style="Muted.TLabel").pack(anchor="w", padx=10)
 
         frame_cols = ttk.LabelFrame(self.frame_paso2, text="Ingreso masivo (uno por línea en cada columna)")
         frame_cols.pack(fill="both", expand=True, padx=10, pady=5)
@@ -4830,7 +4967,7 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         frame_cols.columnconfigure(0, weight=3)
 
         ttk.Label(col1, text="Nombre (uno por línea)").pack(anchor="w")
-        self.text_nombre = tk.Text(col1, wrap="none", height=20, width=40)
+        self.text_nombre = _style_text(tk.Text(col1, wrap="none", height=20, width=40))
         self.text_nombre.pack(fill="both", expand=True, pady=2)
         scroll_y_nombre = ttk.Scrollbar(col1, orient="vertical", command=self.text_nombre.yview)
         scroll_y_nombre.pack(side="right", fill="y")
@@ -4843,7 +4980,7 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         frame_cols.columnconfigure(1, weight=1)
 
         ttk.Label(col2, text="Precio (uno por línea)").pack(anchor="w")
-        self.text_precio = tk.Text(col2, wrap="none", height=20, width=14)
+        self.text_precio = _style_text(tk.Text(col2, wrap="none", height=20, width=14))
         self.text_precio.pack(fill="both", expand=True, pady=2)
         scroll_y_precio = ttk.Scrollbar(col2, orient="vertical", command=self.text_precio.yview)
         scroll_y_precio.pack(side="right", fill="y")
@@ -4856,7 +4993,7 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         frame_cols.columnconfigure(2, weight=1)
 
         ttk.Label(col3, text="Código barra interno (uno por línea)").pack(anchor="w")
-        self.text_codint = tk.Text(col3, wrap="none", height=20, width=18)
+        self.text_codint = _style_text(tk.Text(col3, wrap="none", height=20, width=18))
         self.text_codint.pack(fill="both", expand=True, pady=2)
         scroll_y_codint = ttk.Scrollbar(col3, orient="vertical", command=self.text_codint.yview)
         scroll_y_codint.pack(side="right", fill="y")
@@ -4869,7 +5006,7 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         frame_cols.columnconfigure(3, weight=1)
 
         ttk.Label(col4, text="Código barra externo (uno por línea, opcional)").pack(anchor="w")
-        self.text_codext = tk.Text(col4, wrap="none", height=20, width=18)
+        self.text_codext = _style_text(tk.Text(col4, wrap="none", height=20, width=18))
         self.text_codext.pack(fill="both", expand=True, pady=2)
         scroll_y_codext = ttk.Scrollbar(col4, orient="vertical", command=self.text_codext.yview)
         scroll_y_codext.pack(side="right", fill="y")
@@ -4889,18 +5026,30 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         btn_anterior = ttk.Button(frame_nav, text="← Anterior", command=lambda: self._mostrar_paso(1))
         btn_anterior.pack(side="left")
 
-        btn_siguiente = ttk.Button(frame_nav, text="Siguiente →", command=self._procesar_y_ir_a_paso3)
+        btn_siguiente = ttk.Button(frame_nav, text="Revisar artículos →", command=self._procesar_y_ir_a_paso3,
+                                  style="Primary.TButton")
         btn_siguiente.pack(side="right")
+        frame_cols.pack_forget()
+        frame_btns.pack_forget()
+        frame_nav.pack_forget()
+        frame_nav.pack(side="bottom", fill="x", padx=10, pady=10)
+        frame_btns.pack(side="bottom", fill="x", padx=10, pady=5)
+        frame_cols.pack(side="top", fill="both", expand=True, padx=10, pady=5)
 
     def _crear_paso3(self):
+        _wizard_steps(self.frame_paso3, 3, ("Configurar", "Pegar artículos", "Revisar y exportar"))
         lbl_titulo = ttk.Label(
             self.frame_paso3,
-            text="PASO 3: Revisa la vista previa y genera el archivo de ingreso masivo.",
-            font=("", 11, "bold"),
+            text="Revisa los artículos y genera el Excel",
+            style="Section.TLabel",
             wraplength=1150,
             justify="left"
         )
         lbl_titulo.pack(fill="x", padx=10, pady=(10, 5))
+        ttk.Label(self.frame_paso3, text="Revisa cada columna. Haz doble clic en una celda para corregirla antes de guardar.",
+                  style="Muted.TLabel").pack(anchor="w", padx=10)
+        self.lbl_resumen_ingreso = ttk.Label(self.frame_paso3, text="", style="Success.TLabel")
+        self.lbl_resumen_ingreso.pack(anchor="w", padx=10, pady=(6, 0))
 
         frame_archivo = ttk.LabelFrame(self.frame_paso3, text="Configuración del archivo de salida")
         frame_archivo.pack(fill="x", padx=10, pady=5)
@@ -4915,7 +5064,7 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         btn_generar = ttk.Button(
             frame_archivo,
             text="Generar Excel de ingreso masivo",
-            command=self.generar_excel
+            command=self.generar_excel, style="Primary.TButton"
         )
         btn_generar.grid(row=0, column=2, padx=10, pady=5, sticky="w")
 
@@ -4940,7 +5089,7 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
             self.tree.column(col, anchor="w", stretch=False, width=120)
 
         # Colores alternados tipo Excel
-        self.tree.tag_configure("fila_par", background="#F2F2F2")
+        self.tree.tag_configure("fila_par", background=STRIPE_COLOR)
         self.tree.tag_configure("fila_impar", background="#FFFFFF")
 
         # Doble click para editar celdas (menos la columna Código)
@@ -4953,6 +5102,10 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
 
         btn_anterior = ttk.Button(frame_nav, text="← Anterior", command=self._ir_a_paso2)
         btn_anterior.pack(side="left")
+        frame_tabla.pack_forget()
+        frame_nav.pack_forget()
+        frame_nav.pack(side="bottom", fill="x", padx=10, pady=10)
+        frame_tabla.pack(side="top", fill="both", expand=True, padx=10, pady=5)
 
     def _ajustar_anchos_columnas(self):
         """Ajusta anchos de columnas en O(n): un solo recorrido sobre todas las filas."""
@@ -5156,8 +5309,9 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
 
     def _abrir_instrucciones(self):
         top = tk.Toplevel(self)
-        top.title("Instrucciones - Flujo recomendado")
-        top.geometry("750x450")
+        top.title("Guía de ingreso masivo")
+        top.configure(background=UI["background"])
+        top.geometry("720x430")
         try:
             top.update_idletasks()
             x = self.winfo_rootx() + max(0, (self.winfo_width() - top.winfo_width()) // 2)
@@ -5166,29 +5320,20 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         except Exception:
             pass
 
-        texto = (
-            "Flujo recomendado para el Ingreso Masivo de Artículos:\n\n"
-            "1) PASO 1:\n"
-            "   - Ingresa el CÓDIGO IDENTIFICADOR INICIAL (por ejemplo A020267).\n"
-            "   - Selecciona el PROVEEDOR (Id Categoría).\n"
-            "   - (Opcional) Carga un listado de artículos exportado desde Tivendo para validar si el código ya existe.\n"
-            "   - Si el código ya existe, aparecerán 3 opciones: Cancelar, Reemplazar datos, o Continuar con el siguiente código disponible.\n\n"
-            "2) PASO 2:\n"
-            "   - Pega las columnas de NOMBRE, PRECIO, CÓDIGO BARRA INTERNO y, si quieres, CÓDIGO BARRA EXTERNO.\n"
-            "   - Cada recuadro es una columna; cada línea es un artículo.\n"
-            "   - Presiona 'Siguiente' para procesar la lista. Si hay algún error, se mostrará el detalle y NO avanzarás al Paso 3.\n\n"
-            "3) PASO 3:\n"
-            "   - Revisa la VISTA PREVIA.\n"
-            "   - Define el nombre de archivo.\n"
-            "   - Haz clic en 'Generar Excel de ingreso masivo'.\n"
-            "   - Recuerda: Tivendo exige mínimo 2 artículos con código para aceptar el archivo.\n"
+        body = ttk.Frame(top, padding=20)
+        body.pack(fill="both", expand=True)
+        _page_heading(body, "Cómo preparar el ingreso masivo", "Sigue los tres pasos antes de guardar el archivo.")
+        steps = (
+            ("1. Configurar", "Ingresa el código inicial, por ejemplo A020267, y elige un proveedor. Si el código existe, elige reemplazarlo o continuar con el siguiente disponible."),
+            ("2. Pegar artículos", "Pega nombre, precio y código de barra interno en el mismo orden: una línea por artículo. La barra externa es opcional."),
+            ("3. Revisar y exportar", "Corrige los datos con doble clic en la vista previa, elige el nombre del archivo y genera el Excel. Tivendo requiere al menos dos artículos con código."),
         )
-
-        lbl = ttk.Label(top, text=texto, justify="left", wraplength=730)
-        lbl.pack(fill="both", expand=True, padx=10, pady=10)
-
-        btn_cerrar = ttk.Button(top, text="Cerrar", command=top.destroy)
-        btn_cerrar.pack(pady=5)
+        for title, detail in steps:
+            ttk.Label(body, text=title, style="Section.TLabel").pack(anchor="w", pady=(4, 0))
+            ttk.Label(body, text=detail, style="Muted.TLabel", wraplength=650,
+                      justify="left").pack(anchor="w", pady=(2, 10))
+        ttk.Button(body, text="Cerrar", command=top.destroy,
+                   style="Primary.TButton").pack(anchor="e")
 
     def generar_excel(self):
         if self.df_import.empty:
@@ -5223,7 +5368,7 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
                 messagebox.showwarning(
                     "Atención",
                     "Tivendo exige un mínimo de 2 artículos para el ingreso masivo.\n\n"
-                    "Actualmente solo tienes 1 artículo en la lista."
+                    f"Actualmente tienes {len(df_salida)} artículos válidos en la lista."
                 )
                 return
 
@@ -5245,6 +5390,12 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
     def _refrescar_tabla(self):
         if not self.tree:
             return
+        total = len(self.df_import)
+        self.lbl_resumen_ingreso.config(
+            text=f"{total} artículo(s) en la vista previa · "
+                 + ("Listo para revisar" if total >= 2 else "Se requieren al menos 2 para exportar"),
+            style="Success.TLabel" if total >= 2 else "Warning.TLabel",
+        )
         self.tree.delete(*self.tree.get_children())
         ins = self.tree.insert
         for idx, row_vals in enumerate(self.df_import.itertuples(index=False, name=None)):
