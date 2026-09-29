@@ -99,7 +99,7 @@ _RE_CODE_TOKEN = re.compile(r"[a-z0-9-]{3,}")  # valida cada trozo de codigo (le
 
 STRIPE_COLOR = "#F3F6FA"
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v137"
+APP_VERSION  = "v138"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -151,6 +151,43 @@ def _configure_ui(root):
                     padding=(6, 7), font=("Segoe UI", 10, "bold"))
     style.map("Treeview.Heading", background=[("active", "#DAE6F3")])
     style.configure("TProgressbar", background=UI["primary"], troughcolor="#E3EBF4")
+    _configure_home_ui(style)
+
+
+def _configure_home_ui(style):
+    """Colores del menú principal, sin cambiar las otras pantallas."""
+    background = "#F8F6FC"
+    hero = "#241747"
+    style.configure("Home.TFrame", background=background)
+    style.configure("HomeHero.TFrame", background=hero)
+    style.configure("HomeHeroTitle.TLabel", background=hero, foreground="#FFFFFF",
+                    font=("Segoe UI", 20, "bold"))
+    style.configure("HomeHeroEyebrow.TLabel", background=hero, foreground="#63E1E6",
+                    font=("Segoe UI", 9, "bold"))
+    style.configure("HomeHeroSubtitle.TLabel", background=hero, foreground="#D7CDEF")
+    style.configure("HomeSection.TLabel", background=background, foreground=UI["ink"],
+                    font=("Segoe UI", 11, "bold"))
+    style.configure("HomeMuted.TLabel", background=background, foreground=UI["muted"])
+    style.configure("HomeData.TFrame", background="#FFFFFF", borderwidth=1,
+                    bordercolor="#E5DFF0", relief="solid")
+    style.configure("HomeDataInner.TFrame", background="#FFFFFF")
+    style.configure("HomeDataTitle.TLabel", background="#FFFFFF", foreground=UI["ink"],
+                    font=("Segoe UI", 12, "bold"))
+    for name, color in (("Success", UI["success"]), ("Warning", UI["warning"]),
+                        ("Muted", UI["muted"])):
+        style.configure(f"HomeData{name}.TLabel", background="#FFFFFF", foreground=color)
+    tones = {
+        "Blue": ("#E9F5FF", "#146FB6"),
+        "Purple": ("#F0E9FF", "#6937D3"),
+        "Coral": ("#FFF0EC", "#D45E48"),
+        "Teal": ("#E6F8F3", "#0A9475"),
+    }
+    for tone, (tint, color) in tones.items():
+        style.configure(f"Home{tone}.TFrame", background=tint)
+        style.configure(f"Home{tone}.TButton", background=color, foreground="#FFFFFF",
+                        bordercolor=color, padding=(14, 9), font=("Segoe UI", 11, "bold"))
+        style.map(f"Home{tone}.TButton", background=[("active", hero), ("disabled", "#AFA7BD")],
+                  foreground=[("disabled", "#E8E4EF")])
 
 
 def _style_text(widget):
@@ -2153,40 +2190,59 @@ class StartView(ttk.Frame):
         ranges_cargado: bool,
         auto_last_load_text: str = "",
     ):
-        super().__init__(master)
-        self.master.title("Buscador de Códigos — MERCADO HOUSE")
-        self.pack(fill="both", expand=True, padx=20, pady=16)
-        _page_heading(self, "Buscador de Códigos", "MERCADO HOUSE · Elige una tarea para comenzar")
+        super().__init__(master, style="Home.TFrame")
+        self.master.title("Herramientas — MERCADO HOUSE")
+        self.pack(fill="both", expand=True)
 
-        tasks = ttk.Frame(self)
-        tasks.pack(fill="x")
+        # El pie se reserva primero para que permanezca abajo incluso en 960 × 620.
+        footer = ttk.Frame(self, style="Home.TFrame")
+        footer.pack(side="bottom", fill="x", padx=18, pady=(7, 12))
+        ttk.Label(footer, text=f"Versión {APP_VERSION}", style="HomeMuted.TLabel").pack(side="right")
+        self.btn_cargar_auto = ttk.Button(footer, text="Cargar automáticamente desde Tivendo",
+                                          command=on_auto_load, style="HomeTeal.TButton")
+        self.btn_cargar_auto.pack(side="left")
+        self.lbl_estado_auto = ttk.Label(footer, text="", style="HomeMuted.TLabel")
+        self.lbl_estado_auto.pack(side="left", padx=14)
+
+        header = ttk.Frame(self, style="HomeHero.TFrame", padding=(18, 10))
+        header.pack(fill="x", padx=18, pady=(12, 9))
+        ttk.Label(header, text="MERCADO HOUSE", style="HomeHeroEyebrow.TLabel").pack(anchor="w")
+        ttk.Label(header, text="Herramientas", style="HomeHeroTitle.TLabel").pack(anchor="w", pady=(2, 0))
+        ttk.Label(header, text="Artículos, proveedores y archivos para Tivendo.",
+                  style="HomeHeroSubtitle.TLabel").pack(anchor="w", pady=(2, 0))
+
+        ttk.Label(self, text="ELIGE UNA TAREA", style="HomeSection.TLabel").pack(
+            anchor="w", padx=18, pady=(0, 3))
+
+        tasks = ttk.Frame(self, style="Home.TFrame")
+        tasks.pack(fill="x", padx=18)
         tasks.columnconfigure(0, weight=1, uniform="tasks")
         tasks.columnconfigure(1, weight=1, uniform="tasks")
 
-        def task(row, col, title, detail, command, primary=False):
-            card = ttk.Frame(tasks, style="Card.TFrame", padding=12)
-            card.grid(row=row, column=col, sticky="nsew", padx=(0, 8) if col == 0 else (8, 0), pady=5)
-            ttk.Label(card, text=title, style="Card.Section.TLabel").pack(anchor="w")
-            ttk.Label(card, text=detail, style="Card.Muted.TLabel", wraplength=420).pack(anchor="w", pady=(3, 8))
-            button = ttk.Button(card, text="Abrir", command=command,
-                                style="Primary.TButton" if primary else "TButton")
-            button.pack(anchor="w")
+        def task(row, col, tone, title, command):
+            card = ttk.Frame(tasks, style=f"Home{tone}.TFrame", padding=7)
+            card.grid(row=row, column=col, sticky="nsew", padx=(0, 7) if col == 0 else (7, 0), pady=4)
+            button = ttk.Button(card, text=title, command=command,
+                                style=f"Home{tone}.TButton")
+            button.pack(fill="x")
             return button
 
-        self.btn_buscar = task(0, 0, "Buscar códigos", "Encuentra artículos, barras, packs y rangos.", on_choose_db, True)
-        self.btn_prov = task(0, 1, "Proveedores", "Consulta y administra los proveedores.", on_manage_prov)
-        self.btn_tivendo = task(1, 0, "Cambios masivos de precios", "Prepara precios y rangos para Tivendo.", on_open_tivendo)
-        self.btn_ingreso = task(1, 1, "Ingreso masivo de artículos", "Prepara nuevos artículos y revisa el Excel.", on_open_ingreso_masivo)
+        self.btn_buscar = task(0, 0, "Blue", "Buscar códigos", on_choose_db)
+        self.btn_prov = task(0, 1, "Purple", "Proveedores", on_manage_prov)
+        self.btn_tivendo = task(1, 0, "Coral", "Cambios masivos de precios", on_open_tivendo)
+        self.btn_ingreso = task(1, 1, "Teal", "Ingreso masivo de artículos", on_open_ingreso_masivo)
 
-        sources = ttk.LabelFrame(self, text="Datos cargados")
-        sources.pack(fill="x", pady=(14, 0))
+        sources = ttk.Frame(self, style="HomeData.TFrame", padding=(14, 8))
+        sources.pack(fill="x", padx=18, pady=(9, 0))
         sources.columnconfigure(0, weight=1)
+        ttk.Label(sources, text="Tus datos de trabajo", style="HomeDataTitle.TLabel").grid(
+            row=0, column=0, sticky="w", pady=(0, 4))
 
         def source(row, title, command):
-            line = ttk.Frame(sources)
-            line.grid(row=row, column=0, sticky="ew", pady=2)
+            line = ttk.Frame(sources, style="HomeDataInner.TFrame")
+            line.grid(row=row + 1, column=0, sticky="ew", pady=2)
             line.columnconfigure(0, weight=1)
-            label = ttk.Label(line, text=title, style="Muted.TLabel")
+            label = ttk.Label(line, text=title, style="HomeDataMuted.TLabel")
             label.grid(row=0, column=0, sticky="w")
             button = ttk.Button(line, text="Elegir archivo", command=command)
             button.grid(row=0, column=1, padx=(8, 0))
@@ -2195,14 +2251,6 @@ class StartView(ttk.Frame):
         self.lbl_estado, self.btn_cargar_listado = source(0, "Listado de artículos", on_load_listado)
         self.lbl_estado_packs, self.btn_cargar_packs = source(1, "Maestro de packs", on_load_packs)
         self.lbl_estado_rangos, self.btn_cargar_rangos = source(2, "Lista de precios", on_load_ranges)
-
-        footer = ttk.Frame(self)
-        footer.pack(side="bottom", fill="x", pady=(12, 0))
-        ttk.Label(footer, text=f"Versión {APP_VERSION}", style="Muted.TLabel").pack(side="right")
-        self.btn_cargar_auto = ttk.Button(footer, text="Cargar automáticamente desde Tivendo", command=on_auto_load)
-        self.btn_cargar_auto.pack(side="left")
-        self.lbl_estado_auto = ttk.Label(footer, text="", style="Muted.TLabel")
-        self.lbl_estado_auto.pack(side="left", padx=14)
 
         self.set_listado_cargado(listado_cargado)
         self.set_packs_cargado(packs_cargado)
@@ -2223,7 +2271,7 @@ class StartView(ttk.Frame):
         self.btn_ingreso.config(state=state_dep)
         try:
             self.lbl_estado.config(text=self._estado_texto(cargado),
-                                   style="Success.TLabel" if cargado else "Warning.TLabel")
+                                   style="HomeDataSuccess.TLabel" if cargado else "HomeDataWarning.TLabel")
         except Exception:
             pass
 
@@ -2235,7 +2283,7 @@ class StartView(ttk.Frame):
     def set_packs_cargado(self, cargado: bool):
         try:
             self.lbl_estado_packs.config(text=self._estado_packs_texto(cargado),
-                                         style="Success.TLabel" if cargado else "Muted.TLabel")
+                                         style="HomeDataSuccess.TLabel" if cargado else "HomeDataMuted.TLabel")
         except Exception:
             pass
 
@@ -2247,7 +2295,7 @@ class StartView(ttk.Frame):
     def set_ranges_cargado(self, cargado: bool):
         try:
             self.lbl_estado_rangos.config(text=self._estado_rangos_texto(cargado),
-                                          style="Success.TLabel" if cargado else "Muted.TLabel")
+                                          style="HomeDataSuccess.TLabel" if cargado else "HomeDataMuted.TLabel")
         except Exception:
             pass
 
