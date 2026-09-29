@@ -99,7 +99,7 @@ _RE_CODE_TOKEN = re.compile(r"[a-z0-9-]{3,}")  # valida cada trozo de codigo (le
 
 STRIPE_COLOR = "#F3F6FA"
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v139"
+APP_VERSION  = "v140"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -159,13 +159,12 @@ def _configure_home_ui(style):
     background = "#F8F6FC"
     hero = "#241747"
     style.configure("Home.TFrame", background=background)
-    style.configure("HomeHero.TFrame", background="#FFFFFF", borderwidth=1,
-                    bordercolor="#E5DFF0", relief="solid")
-    style.configure("HomeHeroTitle.TLabel", background="#FFFFFF", foreground=UI["ink"],
+    style.configure("HomeHero.TFrame", background=background, borderwidth=0, relief="flat")
+    style.configure("HomeHeroTitle.TLabel", background=background, foreground=UI["ink"],
                     font=("Segoe UI", 20, "bold"))
-    style.configure("HomeHeroEyebrow.TLabel", background="#FFFFFF", foreground=UI["primary"],
+    style.configure("HomeHeroEyebrow.TLabel", background=background, foreground=UI["primary"],
                     font=("Segoe UI", 9, "bold"))
-    style.configure("HomeHeroSubtitle.TLabel", background="#FFFFFF", foreground=UI["muted"])
+    style.configure("HomeHeroSubtitle.TLabel", background=background, foreground=UI["muted"])
     style.configure("HomeSection.TLabel", background=background, foreground=UI["ink"],
                     font=("Segoe UI", 11, "bold"))
     style.configure("HomeMuted.TLabel", background=background, foreground=UI["muted"])
@@ -2205,12 +2204,12 @@ class StartView(ttk.Frame):
         self.lbl_estado_auto = ttk.Label(footer, text="", style="HomeMuted.TLabel")
         self.lbl_estado_auto.pack(side="left", padx=14)
 
-        header = ttk.Frame(self, style="HomeHero.TFrame", padding=(18, 10))
+        header = ttk.Frame(self, style="HomeHero.TFrame", padding=(0, 8))
         header.pack(fill="x", padx=18, pady=(12, 9))
-        ttk.Label(header, text="MERCADO HOUSE", style="HomeHeroEyebrow.TLabel").pack(anchor="w")
-        ttk.Label(header, text="Herramientas", style="HomeHeroTitle.TLabel").pack(anchor="w", pady=(2, 0))
+        ttk.Label(header, text="MERCADO HOUSE", style="HomeHeroEyebrow.TLabel").pack(anchor="center")
+        ttk.Label(header, text="Herramientas", style="HomeHeroTitle.TLabel").pack(anchor="center", pady=(2, 0))
         ttk.Label(header, text="Artículos, proveedores y archivos para Tivendo.",
-                  style="HomeHeroSubtitle.TLabel").pack(anchor="w", pady=(2, 0))
+                  style="HomeHeroSubtitle.TLabel").pack(anchor="center", pady=(2, 0))
 
         ttk.Label(self, text="ELIGE UNA TAREA", style="HomeSection.TLabel").pack(
             anchor="w", padx=18, pady=(0, 3))
