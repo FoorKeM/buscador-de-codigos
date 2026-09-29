@@ -99,7 +99,7 @@ _RE_CODE_TOKEN = re.compile(r"[a-z0-9-]{3,}")  # valida cada trozo de codigo (le
 
 STRIPE_COLOR = "#F3F6FA"
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v138"
+APP_VERSION  = "v139"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -159,12 +159,13 @@ def _configure_home_ui(style):
     background = "#F8F6FC"
     hero = "#241747"
     style.configure("Home.TFrame", background=background)
-    style.configure("HomeHero.TFrame", background=hero)
-    style.configure("HomeHeroTitle.TLabel", background=hero, foreground="#FFFFFF",
+    style.configure("HomeHero.TFrame", background="#FFFFFF", borderwidth=1,
+                    bordercolor="#E5DFF0", relief="solid")
+    style.configure("HomeHeroTitle.TLabel", background="#FFFFFF", foreground=UI["ink"],
                     font=("Segoe UI", 20, "bold"))
-    style.configure("HomeHeroEyebrow.TLabel", background=hero, foreground="#63E1E6",
+    style.configure("HomeHeroEyebrow.TLabel", background="#FFFFFF", foreground=UI["primary"],
                     font=("Segoe UI", 9, "bold"))
-    style.configure("HomeHeroSubtitle.TLabel", background=hero, foreground="#D7CDEF")
+    style.configure("HomeHeroSubtitle.TLabel", background="#FFFFFF", foreground=UI["muted"])
     style.configure("HomeSection.TLabel", background=background, foreground=UI["ink"],
                     font=("Segoe UI", 11, "bold"))
     style.configure("HomeMuted.TLabel", background=background, foreground=UI["muted"])
@@ -2235,7 +2236,7 @@ class StartView(ttk.Frame):
         sources = ttk.Frame(self, style="HomeData.TFrame", padding=(14, 8))
         sources.pack(fill="x", padx=18, pady=(9, 0))
         sources.columnconfigure(0, weight=1)
-        ttk.Label(sources, text="Tus datos de trabajo", style="HomeDataTitle.TLabel").grid(
+        ttk.Label(sources, text="Datos cargados", style="HomeDataTitle.TLabel").grid(
             row=0, column=0, sticky="w", pady=(0, 4))
 
         def source(row, title, command):
