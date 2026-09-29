@@ -99,7 +99,7 @@ _RE_CODE_TOKEN = re.compile(r"[a-z0-9-]{3,}")  # valida cada trozo de codigo (le
 
 STRIPE_COLOR = "#F3F6FA"
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v134"
+APP_VERSION  = "v137"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -2391,22 +2391,28 @@ class SearchView(ttk.Frame):
 
         self.last_results = pd.DataFrame()
 
-        header = ttk.Frame(self, padding=(16, 14, 16, 0))
+        # El buscador conserva la apariencia nativa y la distribución de v133.
+        # El resto de la aplicación mantiene el tema claro de v134.
+        self._previous_theme = None
+        search_style = ttk.Style(self)
+        if "vista" in search_style.theme_names():
+            self._previous_theme = search_style.theme_use()
+            search_style.theme_use("vista")
+
+        header = ttk.Frame(self, padding=(10, 10, 10, 0))
         header.pack(side=tk.TOP, fill=tk.X)
-        ttk.Button(header, text="← Inicio", command=self._back_home).pack(side="left")
-        ttk.Label(header, text="Buscar códigos", style="Title.TLabel").pack(side="left", padx=16)
+        ttk.Button(header, text="Volver al Menú", command=self._back_home).pack(side="left")
 
         # ===== Contenido del buscador =====
-        content = ttk.Frame(self, padding=(16, 8, 16, 4))
+        content = ttk.Frame(self, padding=10)
         content.pack(side=tk.TOP, fill=tk.X)
         content.columnconfigure(0, weight=1)
 
-        ttk.Label(content, text="1. Escribe o pega los códigos", style="Section.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(content, text="Un código por línea. Los guiones y espacios internos forman parte del código.",
-                  style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(2, 0))
-        area = ttk.Frame(content); area.grid(row=2, column=0, sticky="ew", pady=(5,0))
+        ttk.Label(content, text="Código(s) (pega varios: uno por línea o separados por coma/tab):").grid(
+            row=0, column=0, sticky="w")
+        area = ttk.Frame(content); area.grid(row=1, column=0, sticky="ew", pady=(4, 0))
         area.columnconfigure(0, weight=1)
-        self.txt_query = _style_text(tk.Text(area, height=4, wrap="word"))
+        self.txt_query = tk.Text(area, height=5, wrap="word")
         self.txt_query.grid(row=0, column=0, sticky="nsew")
         vsb = ttk.Scrollbar(area, orient="vertical", command=self.txt_query.yview)
         vsb.grid(row=0, column=1, sticky="ns")
@@ -2414,8 +2420,7 @@ class SearchView(ttk.Frame):
         self.txt_query.bind("<Button-3>", self.show_query_context_menu)
         self.txt_query.bind("<Button-2>", self.show_query_context_menu)
 
-        ttk.Label(content, text="2. Ajusta los filtros", style="Section.TLabel").grid(row=3, column=0, sticky="w", pady=(10, 2))
-        opts = ttk.Frame(content); opts.grid(row=4, column=0, sticky="w", pady=(2,0))
+        opts = ttk.Frame(content); opts.grid(row=2, column=0, sticky="w", pady=(6, 0))
         self.exact = tk.BooleanVar(value=True)
         self.by_barras = tk.BooleanVar(value=False)
         self.by_tivendo = tk.BooleanVar(value=False)
@@ -2425,13 +2430,13 @@ class SearchView(ttk.Frame):
         ttk.Checkbutton(opts, text="Buscar por código Tivendo", variable=self.by_tivendo).pack(side="left", padx=(12,0))
         ttk.Checkbutton(opts, text="Buscar código de pack", variable=self.by_packs).pack(side="left", padx=(12,0))
 
-        row3 = ttk.Frame(content); row3.grid(row=5, column=0, sticky="ew", pady=(8,0))
-        ttk.Label(row3, text="Proveedor:").pack(side="left")
+        row3 = ttk.Frame(content); row3.grid(row=3, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(row3, text="Empresa:").pack(side="left")
         self.var_emp = tk.StringVar()
 
         # Filtro en vivo de proveedores (mini buscador)
         self.var_emp_search = tk.StringVar()
-        ttk.Label(row3, text="Filtrar lista:").pack(side="left", padx=(8, 2))
+        ttk.Label(row3, text="Buscar:").pack(side="left", padx=(8, 2))
         ent_emp = ttk.Entry(row3, textvariable=self.var_emp_search, width=22)
         ent_emp.pack(side="left")
         ent_emp.bind("<KeyRelease>", self.on_emp_search)
@@ -2442,20 +2447,14 @@ class SearchView(ttk.Frame):
         self.cbo_emp.set("— Cualquiera —")
         self.cbo_emp.bind("<Key>", self.on_emp_key)
 
-        btns = ttk.Frame(content)
-        btns.grid(row=6, column=0, sticky="ew", pady=(10, 2))
-        ttk.Button(btns, text="Buscar con proveedor", command=self.on_search,
-                   style="Primary.TButton").pack(side="left")
-        ttk.Button(btns, text="Buscar en todos", command=lambda: self.on_search(force_general=True)).pack(side="left", padx=6)
-        ttk.Button(btns, text="Limpiar", command=self.on_clear).pack(side="left")
-        ttk.Button(btns, text="Copiar...", command=self.show_copy_menu).pack(side="right")
-        ttk.Button(btns, text="Exportar CSV", command=self.export_csv).pack(side="right", padx=6)
+        btns = ttk.Frame(row3)
+        btns.pack(side="left")
+        ttk.Button(btns, text="Buscar por Proveedor", command=self.on_search).pack(side="left", padx=4)
+        ttk.Button(btns, text="Buscar general", command=lambda: self.on_search(force_general=True)).pack(side="left", padx=4)
+        ttk.Button(btns, text="Limpiar", command=self.on_clear).pack(side="left", padx=4)
+        ttk.Button(btns, text="Copiar...", command=self.show_copy_menu).pack(side="left", padx=4)
 
-        results_head = ttk.Frame(self, padding=(16, 5, 16, 0))
-        results_head.pack(fill="x")
-        ttk.Label(results_head, text="3. Revisa los resultados", style="Section.TLabel").pack(side="left")
         self.var_result_count = tk.StringVar(value="Aún no hay búsqueda")
-        ttk.Label(results_head, textvariable=self.var_result_count, style="Muted.TLabel").pack(side="right")
 
         # ttk.Treeview desplaza cada nivel hijo ("indent") bastante hacia la
         # derecha por defecto, asi que la casilla ☐ de un pack (nivel 1)
@@ -2498,7 +2497,7 @@ class SearchView(ttk.Frame):
             anchor = "center" if c in {"packs", "rango1", "rango2"} else "w"
             self.tree.column(c, width=min_width, minwidth=min_width, anchor=anchor, stretch=False)
         self.tree.tag_configure("dup_input", background="#FFF3CD")
-        self.tree.tag_configure("pack_row", background="#EAF2FB")
+        self.tree.tag_configure("pack_row", background="#F1F1FB")
 
         # ---- Acordeon de packs vinculados ----
         # _row_lookup_code: iid de articulo -> codigo/identificador con el que
@@ -2525,21 +2524,19 @@ class SearchView(ttk.Frame):
         vsb2 = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
         hsb2 = ttk.Scrollbar(self, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscroll=vsb2.set, xscroll=hsb2.set)
-        self.tree.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=16, pady=(4, 0))
-        vsb2.place(in_=self.tree, relx=1.0, rely=0, relheight=1.0, anchor="ne")
         # hsb2 NO se superpone sobre el arbol (a diferencia de vsb2): un
         # scrollbar horizontal ocupa casi el alto de una fila entera, y
         # superponerlo sobre el borde inferior tapaba la ultima fila (no se
         # podia ver ni hacer scroll hasta ella). Se empaqueta en su propio
         # espacio justo debajo, con el mismo padx que la tabla para que sus
         # bordes queden alineados con ella en vez de verse "suelto".
-        hsb2.pack(side=tk.BOTTOM, fill=tk.X, padx=16)
-
         self.var_status = tk.StringVar(value=self.status_db_text)
-        lbl_status = ttk.Label(self, textvariable=self.var_status, anchor="w", cursor="hand2",
-                               style="Muted.TLabel")
-        lbl_status.pack(side=tk.BOTTOM, fill=tk.X, padx=16, pady=5)
+        lbl_status = ttk.Label(self, textvariable=self.var_status, anchor="w", cursor="hand2")
+        lbl_status.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=5)
         lbl_status.bind("<Button-1>", lambda e: self.on_change_db())  # click para cambiar BD
+        hsb2.pack(side=tk.BOTTOM, fill=tk.X, padx=10)
+        self.tree.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=(8, 10))
+        vsb2.place(in_=self.tree, relx=1.0, rely=0, relheight=1.0, anchor="ne")
 
         self._context_column = None
         self.menu = tk.Menu(self, tearoff=0)
@@ -2582,6 +2579,16 @@ class SearchView(ttk.Frame):
             pass
         self.destroy()
         self.go_home_cb()
+
+    def destroy(self):
+        previous_theme = getattr(self, "_previous_theme", None)
+        if previous_theme:
+            try:
+                ttk.Style(self).theme_use(previous_theme)
+            except tk.TclError:
+                pass
+            self._previous_theme = None
+        super().destroy()
 
     # ---- Helpers buscador ----
     def on_change_db(self):
