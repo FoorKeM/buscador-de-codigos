@@ -99,7 +99,7 @@ _RE_CODE_TOKEN = re.compile(r"[a-z0-9-]{3,}")  # valida cada trozo de codigo (le
 
 STRIPE_COLOR = "#F3F6FA"
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v140"
+APP_VERSION  = "v141"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -971,8 +971,23 @@ async def _auto_click_classic_sales_report(page):
     exact_links = page.get_by_role("link", name="Informes de Ventas", exact=True)
     if await exact_links.count() > 0:
         target = exact_links.last
-        await target.scroll_into_view_if_needed()
-        await target.click()
+        await target.scroll_into_view_if_needed(timeout=5000)
+        try:
+            await target.click(timeout=5000)
+        except Exception as exc:
+            # El menú desplegable de Tivendo a veces queda encima del enlace.
+            # Playwright espera que reciba el clic físico y termina agotando el
+            # tiempo; activar el enlace directamente evita esa superposición.
+            if "intercepts pointer events" not in str(exc):
+                raise
+            _auto_log("Menú de Tivendo superpuesto a Informes de Ventas; activando el enlace directamente")
+            try:
+                await target.evaluate("element => element.click()", timeout=5000)
+            except Exception as fallback_exc:
+                _auto_log(f"También falló el clic directo de Informes de Ventas: {fallback_exc}")
+                raise AutoDownloadError(
+                    "No se pudo abrir Informes de Ventas porque el menú de Tivendo quedó superpuesto."
+                ) from fallback_exc
         return
 
     result = await page.evaluate(
@@ -3946,6 +3961,10 @@ class RootApp(tk.Tk):
                 self.after(0, done)
             except Exception as exc:
                 err = str(exc)
+                _auto_log(f"Error en carga automática: {err}")
+                # El registro conserva el detalle de Playwright; el cuadro de
+                # diálogo solo muestra la causa, no cientos de líneas de reintentos.
+                err = err.split("Call log:", 1)[0].strip()
                 login_failed = isinstance(exc, TivendoLoginError)
 
                 def fail():
