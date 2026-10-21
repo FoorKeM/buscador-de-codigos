@@ -3971,6 +3971,10 @@ class RootApp(tk.Tk):
         bar = ttk.Progressbar(box, mode="indeterminate", length=440)
         bar.pack(fill="x", pady=(12, 0))
         bar.start(10)
+        progress.update_idletasks()
+        x = self.winfo_rootx() + max(0, (self.winfo_width() - progress.winfo_width()) // 2)
+        y = self.winfo_rooty() + max(0, (self.winfo_height() - progress.winfo_height()) // 2)
+        progress.geometry(f"+{x}+{y}")
 
         def worker():
             error = None
@@ -4549,7 +4553,7 @@ class TivendoWindow(ttk.Frame):
         df_map = df_map.fillna("").astype(str).apply(lambda s: s.str.strip())
         df_map = df_map[df_map["Identificador"].ne("") & df_map["CodigoBarraInterno"].ne("")]
 
-        label_text = f"Listado comprobado · {len(df_map):,} artículos\nArchivo: {path.name}"
+        label_text = f"Listado comprobado · {len(df_map):,} artículos con barra interna\nArchivo: {path.name}"
         return df_map, label_text
 
     def _build_stepB_paste(self):
@@ -4742,7 +4746,7 @@ class TivendoWindow(ttk.Frame):
         headings = ("Código", "Artículo", "Barra interna", "Precio nuevo", "Desde", "Hasta", "Precio 2", "Desde 2", "Hasta 2")
         for c,w in zip(cols, widths):
             self.tree.heading(c, text=headings[cols.index(c)])
-            self.tree.column(c, width=w, anchor="w")
+            self.tree.column(c, width=w, minwidth=180 if c == "Nombre" else 80, stretch=c == "Nombre", anchor="w")
         self.tree.pack(side="left", fill="both", expand=True)
 
         vsb = ttk.Scrollbar(body, orient="vertical", command=self.tree.yview)
@@ -4839,6 +4843,8 @@ class TivendoWindow(ttk.Frame):
             self.side_shell_rangos.pack(side="right", fill="y", before=self.preview_vsb)
         else:
             self.side_shell_rangos.pack_forget()
+        count = (9 if self.enable_r2.get() else 6) if self.var_opciones_rangos.get() else 4
+        self.tree.configure(displaycolumns=self.columns[:count])
 
     def _refocus_filter(self):
         try:
@@ -4854,6 +4860,7 @@ class TivendoWindow(ttk.Frame):
             self.tree.column("Precio2", width=120, stretch=True, anchor="w")
             self.tree.column("RangoInicial2", width=120, stretch=True, anchor="w")
             self.tree.column("RangoFinal2", width=120, stretch=True, anchor="w")
+        self._toggle_opciones_rangos()
         if not initial: self.update_idletasks()
 
     def _current_df(self):
@@ -5231,7 +5238,6 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         self._catalogo_job = 0
         self.var_codigo_inicial = tk.StringVar()
         self.var_codigo_manual = tk.BooleanVar(value=False)
-        self._codigo_lote_inicial = ""
 
         # Cargamos siempre la versión más reciente de proveedores desde empresas.json
         _emp = load_empresas()

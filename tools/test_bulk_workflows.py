@@ -262,6 +262,12 @@ class InterfazTests(unittest.TestCase):
         self.assertEqual(view._read_pasted_lists()[0], ["001", "", "002"])
         view._escribir_tabla_precios([["001", "1290"], ["002", "2990"]])
         view._build_preview_from_paste()
+        self.assertEqual(tuple(view.tree["displaycolumns"]), tuple(view.columns[:4]))
+        view.var_opciones_rangos.set(True)
+        view._toggle_opciones_rangos()
+        self.assertEqual(tuple(view.tree["displaycolumns"]), tuple(view.columns[:6]))
+        view.var_opciones_rangos.set(False)
+        view._toggle_opciones_rangos()
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "precios.xlsx"
             with mock.patch.object(app.filedialog, "asksaveasfilename", return_value=str(path)), mock.patch.object(app.messagebox, "showinfo"):
