@@ -72,6 +72,9 @@ import os
 import shutil
 import threading
 import asyncio
+import tempfile
+import csv
+import io
 import unicodedata
 import difflib
 import numpy as np
@@ -99,7 +102,7 @@ _RE_CODE_TOKEN = re.compile(r"[a-z0-9-]{3,}")  # valida cada trozo de codigo (le
 
 STRIPE_COLOR = "#F3F6FA"
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v141"
+APP_VERSION  = "v142"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -197,6 +200,23 @@ def _style_text(widget):
                      highlightthickness=1, highlightbackground=UI["border"],
                      highlightcolor=UI["primary"], padx=8, pady=6)
     return widget
+
+
+def _paste_text_column(parent, title):
+    parent.columnconfigure(0, weight=1)
+    parent.rowconfigure(0, minsize=34)
+    parent.rowconfigure(1, weight=1)
+    label = ttk.Label(parent, text=title, anchor="w")
+    label.grid(row=0, column=0, columnspan=2, sticky="ew")
+    parent.bind("<Configure>", lambda event: label.configure(wraplength=max(80, event.width - 8)))
+    text = _style_text(tk.Text(parent, wrap="none", height=8, width=1))
+    text.grid(row=1, column=0, sticky="nsew")
+    vertical = ttk.Scrollbar(parent, orient="vertical", command=text.yview)
+    vertical.grid(row=1, column=1, sticky="ns")
+    horizontal = ttk.Scrollbar(parent, orient="horizontal", command=text.xview)
+    horizontal.grid(row=2, column=0, sticky="ew")
+    text.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+    return text
 
 
 def _page_heading(parent, title, subtitle=""):
@@ -578,6 +598,7 @@ def save_auto_last_load(articulos: Path, packs: Path, precios: Path):
         AUTO_LAST_LOAD_PATH.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "downloaded_at": datetime.now().isoformat(timespec="seconds"),
+            "articulos_downloaded_at": datetime.now().isoformat(timespec="seconds"),
             "articulos": str(Path(articulos)),
             "packs": str(Path(packs)),
             "precios": str(Path(precios)),
@@ -586,6 +607,30 @@ def save_auto_last_load(articulos: Path, packs: Path, precios: Path):
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
+
+def save_auto_articles_load(articulos: Path):
+    """Actualiza solo el listado y su fecha; conserva packs y precios."""
+    data = load_auto_last_load()
+    data.update(articulos=str(Path(articulos)),
+                articulos_downloaded_at=datetime.now().isoformat(timespec="seconds"))
+    AUTO_LAST_LOAD_PATH.parent.mkdir(parents=True, exist_ok=True)
+    pending = AUTO_LAST_LOAD_PATH.with_suffix(".json.tmp")
+    with open(pending, "w", encoding="utf-8") as file:
+        json.dump(data, file, ensure_ascii=False, indent=2)
+    pending.replace(AUTO_LAST_LOAD_PATH)
+
+
+def article_download_label(path) -> str:
+    data = load_auto_last_load()
+    try:
+        if path and Path(data.get("articulos", "")).resolve() == Path(path).resolve():
+            date = format_auto_last_load_date(data.get("articulos_downloaded_at") or data.get("downloaded_at", ""))
+            if date:
+                return date
+    except (OSError, ValueError):
+        pass
+    return "sin fecha registrada (archivo manual)"
+
 
 def format_auto_last_load_date(value: str) -> str:
     try:
@@ -1272,6 +1317,47 @@ async def auto_download_articulos_packs_y_precios(usuario: str, password: str, p
 async def auto_download_articulos_y_packs(usuario: str, password: str, progress_cb=None) -> dict:
     result = await auto_download_articulos_packs_y_precios(usuario, password, progress_cb)
     return {"articulos": result["articulos"], "packs": result["packs"]}
+
+
+async def auto_download_solo_articulos(usuario: str, password: str, progress_cb=None):
+    """Valida la descarga antes de reemplazar solo el listado compartido."""
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError as exc:
+        raise AutoDownloadError("Usa el ejecutable actualizado para descargar el listado automáticamente.") from exc
+
+    def progress(text):
+        _auto_log(text)
+        if progress_cb:
+            progress_cb(text)
+
+    APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="listado-", dir=APP_DATA_DIR) as staging:
+        async with async_playwright() as playwright:
+            progress("Iniciando sesión en Tivendo…")
+            browser, context, page = await _auto_new_page(playwright, Path(staging))
+            try:
+                await _auto_login_tivendo(page, usuario, password)
+                await _auto_ensure_mercado_house(page, usuario, password)
+                progress("Descargando solo el listado de artículos…")
+                pos = await _auto_open_pos(context, page)
+                source = await _auto_download_from_pos(pos, "Listado de artículos", "listado_articulos.xlsx", Path(staging))
+                progress("Comprobando el listado y el último código válido…")
+                catalogo = leer_catalogo_articulos(source)
+                AUTO_DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+                # Ruta nueva: el listado anterior sigue disponible si después
+                # no se puede guardar la metadata o aplicar el cambio en la UI.
+                stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                target = AUTO_DOWNLOAD_DIR / (f"listado_articulos_{stamp}" + source.suffix.lower())
+                pending = target.with_suffix(target.suffix + ".part")
+                shutil.copy2(source, pending)
+                pending.replace(target)
+                return target, catalogo
+            finally:
+                try:
+                    await browser.close()
+                except Exception as exc:
+                    _auto_log(f"No se pudo cerrar el navegador de descarga: {exc}")
 
 # =====================================================
 #  Proveedores (empresas) — persistencia
@@ -2282,8 +2368,8 @@ class StartView(ttk.Frame):
         y actualiza el texto de estado en pantalla."""
         state_dep = "normal" if cargado else "disabled"
         self.btn_buscar.config(state=state_dep)
-        self.btn_tivendo.config(state=state_dep)
-        self.btn_ingreso.config(state=state_dep)
+        self.btn_tivendo.config(state="normal")
+        self.btn_ingreso.config(state="normal")
         try:
             self.lbl_estado.config(text=self._estado_texto(cargado),
                                    style="HomeDataSuccess.TLabel" if cargado else "HomeDataWarning.TLabel")
@@ -2317,9 +2403,9 @@ class StartView(ttk.Frame):
     def set_auto_last_load(self, texto: str):
         try:
             if texto:
-                self.lbl_estado_auto.config(text=f"Última carga automática: {texto}")
+                self.lbl_estado_auto.config(text=f"Listado descargado: {texto}")
             else:
-                self.lbl_estado_auto.config(text="Última carga automática: sin registro")
+                self.lbl_estado_auto.config(text="Listado descargado: sin registro")
         except Exception:
             pass
 
@@ -3662,19 +3748,19 @@ class RootApp(tk.Tk):
             articulos_raw = str(data.get("articulos", "")).strip()
             packs_raw = str(data.get("packs", "")).strip()
             precios_raw = str(data.get("precios", "")).strip()
-            if not (articulos_raw and packs_raw and precios_raw):
+            if not articulos_raw:
                 return
 
             articulos = Path(articulos_raw)
-            packs = Path(packs_raw)
-            precios = Path(precios_raw)
-            if not (articulos.exists() and packs.exists() and precios.exists()):
+            packs = Path(packs_raw) if packs_raw else None
+            precios = Path(precios_raw) if precios_raw else None
+            if not articulos.is_file():
                 return
 
             self.listado_path = articulos
-            self.packs_path = packs
-            self.ranges_path = precios
-            self.auto_last_load_text = format_auto_last_load_date(data.get("downloaded_at", ""))
+            self.packs_path = packs if packs and packs.is_file() else None
+            self.ranges_path = precios if precios and precios.is_file() else None
+            self.auto_last_load_text = article_download_label(articulos)
         except Exception as exc:
             _auto_log(f"No se pudo restaurar última carga automática: {exc}")
 
@@ -3767,6 +3853,8 @@ class RootApp(tk.Tk):
         if hasattr(self, "start_view") and self.start_view is not None:
             try:
                 self.start_view.set_listado_cargado(self.listado_path is not None)
+                self.auto_last_load_text = article_download_label(self.listado_path) if self.listado_path else ""
+                self.start_view.set_auto_last_load(self.auto_last_load_text)
             except Exception:
                 pass
         if self.listado_path is not None:
@@ -3858,7 +3946,67 @@ class RootApp(tk.Tk):
         self.wait_window(dialog)
         return result["value"]
 
+    def _actualizar_solo_articulos(self, on_success):
+        if getattr(self, "_auto_load_busy", False):
+            messagebox.showinfo("Descarga en curso", "Espera a que termine la descarga actual.")
+            return
+        credentials = self._ask_auto_credentials()
+        if not credentials:
+            return
+        usuario, password = credentials
+        save_auto_credentials(usuario, password)
+        self._auto_load_busy = True
+        progress = tk.Toplevel(self)
+        progress.title("Actualizar listado de artículos")
+        progress.transient(self)
+        progress.resizable(False, False)
+        progress.protocol("WM_DELETE_WINDOW", lambda: None)
+        progress.grab_set()
+        box = ttk.Frame(progress, padding=20)
+        box.pack(fill="both", expand=True)
+        ttk.Label(box, text="Actualizando el listado", style="Section.TLabel").pack(anchor="w")
+        ttk.Label(box, text="El menú y este asistente usarán el mismo archivo.", style="Muted.TLabel").pack(anchor="w", pady=(4, 8))
+        status = tk.StringVar(value="Preparando descarga…")
+        ttk.Label(box, textvariable=status, wraplength=450).pack(anchor="w")
+        bar = ttk.Progressbar(box, mode="indeterminate", length=440)
+        bar.pack(fill="x", pady=(12, 0))
+        bar.start(10)
+
+        def worker():
+            error = None
+            result = None
+            try:
+                result = asyncio.run(auto_download_solo_articulos(
+                    usuario, password, lambda text: self.after(0, lambda value=text: status.set(value))))
+                save_auto_articles_load(result[0])
+            except Exception as exc:
+                error = exc
+                _auto_log(f"Error al actualizar solo artículos: {exc}")
+
+            def apply():
+                self._auto_load_busy = False
+                bar.stop()
+                progress.destroy()
+                if error is not None:
+                    if isinstance(error, TivendoLoginError):
+                        save_auto_credentials(usuario, "")
+                    messagebox.showerror("No se actualizó el listado",
+                        "Se conserva el listado que tenías cargado.\n\n" + str(error).split("Call log:", 1)[0].strip())
+                    return
+                self.listado_path = result[0]
+                self.auto_last_load_text = article_download_label(self.listado_path)
+                if self.start_view is not None:
+                    self.start_view.set_listado_cargado(True)
+                    self.start_view.set_auto_last_load(self.auto_last_load_text)
+                on_success(*result)
+            self.after(0, apply)
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _auto_load_articulos_packs(self):
+        if getattr(self, "_auto_load_busy", False):
+            messagebox.showinfo("Descarga en curso", "Espera a que termine la descarga actual.")
+            return
         credentials = self._ask_auto_credentials()
         if not credentials:
             return
@@ -3866,6 +4014,9 @@ class RootApp(tk.Tk):
         save_auto_credentials(usuario, password)
 
         progress = tk.Toplevel(self)
+        self._auto_load_busy = True
+        progress.protocol("WM_DELETE_WINDOW", lambda: None)
+        progress.grab_set()
         progress.title("Carga automática")
         progress.configure(background=UI["background"])
         progress.transient(self)
@@ -3918,6 +4069,7 @@ class RootApp(tk.Tk):
                 }
 
                 def done():
+                    self._auto_load_busy = False
                     try:
                         pb.stop()
                         progress.destroy()
@@ -3932,7 +4084,7 @@ class RootApp(tk.Tk):
                     self.ranges_df = result["ranges_df"]
                     self.ranges_index = result["ranges_index"]
                     save_auto_last_load(self.listado_path, self.packs_path, self.ranges_path)
-                    self.auto_last_load_text = format_auto_last_load_date(load_auto_last_load().get("downloaded_at", ""))
+                    self.auto_last_load_text = article_download_label(self.listado_path)
 
                     prefs = load_prefs()
                     prefs["last_dir"] = str(AUTO_DOWNLOAD_DIR)
@@ -3968,6 +4120,7 @@ class RootApp(tk.Tk):
                 login_failed = isinstance(exc, TivendoLoginError)
 
                 def fail():
+                    self._auto_load_busy = False
                     try:
                         pb.stop()
                         progress.destroy()
@@ -4154,8 +4307,6 @@ class RootApp(tk.Tk):
 
     def _tivendo_flow(self):
         # Abre la herramienta de cambios masivos de precios en la ventana principal
-        if not self._require_listado():
-            return
         try:
             self._clear()
             TivendoWindow(self, listado_path=self.listado_path, go_home_cb=self._show_start)
@@ -4164,8 +4315,6 @@ class RootApp(tk.Tk):
 
     def _ingreso_masivo_flow(self):
         # Abre la herramienta de ingreso masivo de artículos en la ventana principal
-        if not self._require_listado():
-            return
         try:
             self._clear()
             TivendoIngresoMasivoArticulosWindow(self, catalogo_path=self.listado_path, go_home_cb=self._show_start)
@@ -4233,6 +4382,8 @@ class TivendoWindow(ttk.Frame):
         self.df_preview = None     # DataFrame completo
         self.df_view = None        # DataFrame filtrado (None = sin filtro)
         self._df_preview_norm = {} # columnas normalizadas para filtro rápido
+        self._modo_ejemplo_precios = False
+        self._price_load_job = 0
 
         self.enable_r2 = tk.BooleanVar(value=False)
         self.export_only_valid = tk.BooleanVar(value=True)
@@ -4249,8 +4400,7 @@ class TivendoWindow(ttk.Frame):
             except Exception:
                 self.path_listado = None
 
-        # Comenzamos directamente en el Paso 2 (pegar datos)
-        self._show(self.stepB)
+        self._show(self.stepA)
 
         # Carga diferida del listado (no bloquea la UI)
         if self.path_listado is not None:
@@ -4264,12 +4414,12 @@ class TivendoWindow(ttk.Frame):
         _wizard_steps(f, 1, ("Listado", "Pegar precios", "Revisar y exportar"))
         ttk.Label(
             f,
-            text="Listado de artículos",
+            text="Cambia precios de productos que ya existen",
             style="Section.TLabel",
         ).pack(anchor="w")
         ttk.Label(
             f,
-            text="Se utilizará el LISTADO DE ARTÍCULOS que seleccionaste al inicio del programa.",
+            text="1. Confirma el listado.  2. Pega barras y precios nuevos.  3. Revisa y guarda el Excel para Tivendo.",
             foreground="#444",
         ).pack(anchor="w", pady=(4, 12))
 
@@ -4280,18 +4430,28 @@ class TivendoWindow(ttk.Frame):
             foreground="#666",
         )
         self.lbl_listado.pack(anchor="w", pady=(8, 12))
+        self.lbl_fecha_precios = ttk.Label(f, text="", style="Muted.TLabel")
+        self.lbl_fecha_precios.pack(anchor="w", pady=(0, 8))
+        ttk.Button(f, text="Actualizar solo listado de artículos", command=self._actualizar_listado_precios).pack(anchor="w")
+        ttk.Label(f, text="El mismo listado que en Inicio. El Excel que generes debe importarse después en Tivendo.",
+            style="Muted.TLabel").pack(anchor="w", pady=(10, 0))
 
         # Botón para pasar al siguiente paso (pegar los datos)
         self.btn_to_paste = ttk.Button(
             f,
-            text="Continuar →",
+            text="Continuar: pegar precios →", style="Primary.TButton",
             state="disabled",
             command=lambda: self._show(self.stepB),
         )
-        self.btn_to_paste.pack(anchor="e")
+        self.btn_to_paste.pack(side="bottom", anchor="e", pady=12)
+
+    def _actualizar_listado_precios(self):
+        self.master._actualizar_solo_articulos(lambda ruta, catalogo: self._start_async_listado_load(ruta))
 
     def _start_async_listado_load(self, path: Path):
         """Carga el listado en un hilo para no congelar la apertura de la ventana."""
+        self._price_load_job += 1
+        job = self._price_load_job
         # UI: mostrar estado cargando + progressbar si existe
         try:
             self.lbl_listado.config(text=f"Cargando listado: {path.name} ...")
@@ -4302,7 +4462,7 @@ class TivendoWindow(ttk.Frame):
         try:
             if not hasattr(self, "_pb_listado"):
                 self._pb_listado = ttk.Progressbar(self.stepA, mode="indeterminate")
-                self._pb_listado.pack(anchor="w", fill="x", pady=(4, 0))
+            self._pb_listado.pack(anchor="w", fill="x", pady=(4, 0))
             self._pb_listado.start(10)
         except Exception:
             pass
@@ -4323,9 +4483,12 @@ class TivendoWindow(ttk.Frame):
 
             def apply():
                 # detener progress
+                if not self.winfo_exists() or job != self._price_load_job:
+                    return
                 try:
                     if hasattr(self, "_pb_listado"):
                         self._pb_listado.stop()
+                        self._pb_listado.pack_forget()
                 except Exception:
                     pass
 
@@ -4341,7 +4504,9 @@ class TivendoWindow(ttk.Frame):
                     self.path_listado = Path(path)
                     self.df_map = df_map
                     self.lbl_listado.config(text=label_text)
+                    self.lbl_fecha_precios.config(text=f"Última descarga del listado: {article_download_label(path)}")
                     self.btn_to_paste.config(state="normal")
+                    self._actualizar_pegado_precios()
                     # Si estábamos en Paso 2, igual queda listo para usar
                 except Exception:
                     pass
@@ -4381,13 +4546,10 @@ class TivendoWindow(ttk.Frame):
 
         df_map = df[[ident_col, barra_col, nombre_col]].copy()
         df_map.columns = ["Identificador", "CodigoBarraInterno", "Nombre"]
-        df_map = df_map.astype(str).apply(lambda s: s.str.strip())
-        df_map = df_map.dropna(subset=["Identificador", "CodigoBarraInterno"])
+        df_map = df_map.fillna("").astype(str).apply(lambda s: s.str.strip())
+        df_map = df_map[df_map["Identificador"].ne("") & df_map["CodigoBarraInterno"].ne("")]
 
-        label_text = (
-            f"OK: {path.name} | "
-            f"Código='{ident_col}' | Barra='{barra_col}' | Nombre='{nombre_col}'"
-        )
+        label_text = f"Listado comprobado · {len(df_map):,} artículos\nArchivo: {path.name}"
         return df_map, label_text
 
     def _build_stepB_paste(self):
@@ -4397,30 +4559,125 @@ class TivendoWindow(ttk.Frame):
         ttk.Label(f, text="Un dato por línea en cada columna. La primera línea de códigos corresponde a la primera de precios.",
                   style="Muted.TLabel").pack(anchor="w", pady=(3, 0))
 
+        tools = ttk.Frame(f)
+        tools.pack(fill="x", pady=(10, 0))
+        ttk.Button(tools, text="Pegar 2 columnas de Excel", command=self._pegar_tabla_precios,
+            style="Primary.TButton").pack(side="left")
+        ttk.Button(tools, text="Probar con un ejemplo", command=self._ejemplo_precios).pack(side="left", padx=8)
+        self.lbl_pegado_precios = ttk.Label(f, text="Pega una barra interna y su precio nuevo en cada fila.", style="Muted.TLabel")
+        self.lbl_pegado_precios.pack(anchor="w", pady=(6, 0))
+
         cont = ttk.Frame(f); cont.pack(fill="both", expand=True, pady=12)
         left = ttk.Frame(cont); left.pack(side="left", fill="both", expand=True, padx=(0,8))
         right = ttk.Frame(cont); right.pack(side="left", fill="both", expand=True, padx=(8,0))
 
-        ttk.Label(left, text="Códigos de barra internos (uno por línea)").pack(anchor="w")
-        self.txt_cod = _style_text(tk.Text(left, height=20, wrap="none")); self.txt_cod.pack(fill="both", expand=True)
+        self.txt_cod = _paste_text_column(left, "1. Barra interna del producto")
 
-        ttk.Label(right, text="Precios (uno por línea)").pack(anchor="w")
-        self.txt_prec = _style_text(tk.Text(right, height=20, wrap="none")); self.txt_prec.pack(fill="both", expand=True)
+        self.txt_prec = _paste_text_column(right, "2. Precio nuevo (ejemplo: 1290)")
 
         bar = ttk.Frame(f); bar.pack(fill="x")
-        ttk.Button(bar, text="Limpiar", command=lambda:(self.txt_cod.delete("1.0","end"), self.txt_prec.delete("1.0","end"))).pack(side="left")
+        ttk.Button(bar, text="Limpiar", command=self._limpiar_pegado_precios).pack(side="left")
         ttk.Button(bar, text="← Volver", command=lambda:self._show(self.stepA)).pack(side="left", padx=8)
-        ttk.Button(bar, text="Revisar datos →", command=self._build_preview_from_paste,
-                   style="Primary.TButton").pack(side="right")
+        self.btn_revisar_precios = ttk.Button(bar, text="Comprobar y revisar precios →", command=self._build_preview_from_paste,
+                   style="Primary.TButton", state="disabled")
+        self.btn_revisar_precios.pack(side="right")
+        for widget in (self.txt_cod, self.txt_prec):
+            widget.bind("<<Modified>>", self._al_editar_precios)
+            widget.tag_configure("error_dato", background="#FDEBEC")
+        self.txt_cod.bind("<Control-v>", self._pegar_excel_en_barras)
+        self.txt_cod.bind("<Control-V>", self._pegar_excel_en_barras)
+        cont.pack_forget()
+        bar.pack_forget()
+        bar.pack(side="bottom", fill="x", pady=(8, 0))
+        cont.pack(fill="both", expand=True, pady=10)
 
     def _read_pasted_lists(self):
-        codes = [l.strip() for l in self.txt_cod.get("1.0","end").splitlines() if l.strip()]
-        prices = [clean_price(l) for l in self.txt_prec.get("1.0","end").splitlines() if l.strip()]
-        return codes, prices
+        codes = self.txt_cod.get("1.0", "end-1c").splitlines()
+        prices = self.txt_prec.get("1.0", "end-1c").splitlines()
+        rows = [(codes[i].strip() if i < len(codes) else "", prices[i].strip() if i < len(prices) else "")
+                for i in range(max(len(codes), len(prices)))]
+        rows = [row for row in rows if any(row)]
+        return [row[0] for row in rows], [clean_price(row[1]) for row in rows]
+
+    def _al_editar_precios(self, event):
+        if event.widget.edit_modified():
+            event.widget.edit_modified(False)
+            self._actualizar_pegado_precios()
+
+    def _actualizar_pegado_precios(self):
+        codes, prices = self._read_pasted_lists()
+        valid = bool(codes) and all(codes) and all(re.fullmatch(r"[0-9]+(?:[.,][0-9]+)?", p) for p in prices)
+        first_error = ""
+        raw_codes = self.txt_cod.get("1.0", "end-1c").splitlines()
+        raw_prices = self.txt_prec.get("1.0", "end-1c").splitlines()
+        for widget in (self.txt_cod, self.txt_prec):
+            widget.tag_remove("error_dato", "1.0", "end")
+        for index in range(max(len(raw_codes), len(raw_prices))):
+            code = raw_codes[index].strip() if index < len(raw_codes) else ""
+            price = clean_price(raw_prices[index]) if index < len(raw_prices) else ""
+            if not code and not price:
+                continue
+            for widget, wrong, detail in ((self.txt_cod, not code, "falta barra interna"),
+                    (self.txt_prec, re.fullmatch(r"[0-9]+(?:[.,][0-9]+)?", price) is None, "revisa el precio")):
+                if wrong:
+                    widget.tag_add("error_dato", f"{index + 1}.0", f"{index + 1}.end+1c")
+                    if not first_error:
+                        first_error = f"Fila {index + 1}: {detail}."
+        count = len(codes)
+        text = ("PRÁCTICA · " if self._modo_ejemplo_precios else "")
+        text += f"{count} producto(s) · " + ("Listo para comprobar en el listado." if valid else first_error or "Cada fila necesita una barra y un precio válido.")
+        self.lbl_pegado_precios.config(text=text, style="Success.TLabel" if valid else "Muted.TLabel" if not count else "Warning.TLabel")
+        self.btn_revisar_precios.config(state="normal" if valid and self.df_map is not None else "disabled")
+        return valid
+
+    def _limpiar_pegado_precios(self):
+        self._modo_ejemplo_precios = False
+        self.txt_cod.delete("1.0", "end")
+        self.txt_prec.delete("1.0", "end")
+        self._actualizar_pegado_precios()
+
+    def _escribir_tabla_precios(self, rows, ejemplo=False):
+        self._modo_ejemplo_precios = ejemplo
+        for index, widget in enumerate((self.txt_cod, self.txt_prec)):
+            widget.delete("1.0", "end")
+            widget.insert("1.0", "\n".join(row[index] for row in rows))
+        self._actualizar_pegado_precios()
+
+    def _pegar_excel_en_barras(self, event=None):
+        try:
+            if "\t" in self.clipboard_get():
+                self._pegar_tabla_precios()
+                return "break"
+        except tk.TclError:
+            pass
+
+    def _pegar_tabla_precios(self):
+        try:
+            rows = parsear_tabla_pegada(self.clipboard_get(), 2, {"barra interna", "codigo barra interno", "codigo de barra interno"})
+            if self.txt_cod.get("1.0", "end-1c").strip() or self.txt_prec.get("1.0", "end-1c").strip():
+                if not messagebox.askyesno("Reemplazar datos", "¿Reemplazar los códigos y precios pegados con la tabla copiada?"):
+                    return
+            self._escribir_tabla_precios(rows)
+        except (ValueError, tk.TclError) as exc:
+            messagebox.showwarning("Cómo pegar desde Excel", f"{exc}\n\nCopia dos columnas: Barra interna | Precio nuevo.")
+
+    def _ejemplo_precios(self):
+        if self.df_map is None or self.df_map.empty:
+            messagebox.showinfo("Espera al listado", "Primero deja que termine de cargarse el listado.")
+            return
+        if self.txt_cod.get("1.0", "end-1c").strip() or self.txt_prec.get("1.0", "end-1c").strip():
+            if not messagebox.askyesno("Probar ejemplo", "¿Reemplazar los datos pegados por precios de práctica?"):
+                return
+        sample = self.df_map[self.df_map["CodigoBarraInterno"].ne("") &
+                             ~self.df_map["Nombre"].map(_normalize_text).str.match(r"^no\s+disponible\b")].head(2)
+        self._escribir_tabla_precios([[row.CodigoBarraInterno, "1290"] for row in sample.itertuples()], ejemplo=True)
 
     def _build_preview_from_paste(self):
         if self.df_map is None:
             messagebox.showwarning("Listado requerido", "Primero selecciona el Listado de artículos."); return
+        if not self._actualizar_pegado_precios():
+            messagebox.showwarning("Revisa las filas", "Cada código necesita su precio nuevo en la misma fila. Los espacios vacíos no se desplazan.")
+            return
         codes, prices = self._read_pasted_lists()
         if not codes or not prices:
             messagebox.showwarning("Datos faltantes", "Pega al menos un código y un precio."); return
@@ -4447,17 +4704,20 @@ class TivendoWindow(ttk.Frame):
         f = self.stepC = ttk.Frame(self, padding=16)
         _wizard_steps(f, 3, ("Listado", "Pegar precios", "Revisar y exportar"))
         ttk.Label(f, text="Revisa los artículos y genera el archivo", style="Section.TLabel").pack(anchor="w")
-        ttk.Label(f, text="Las filas rojas no se encontraron en el listado. Puedes editar precios con doble clic.",
+        ttk.Label(f, text="Revisa los nombres y precios nuevos. Las filas rojas no se encontraron. Guarda el Excel e impórtalo en Tivendo.",
                   style="Muted.TLabel").pack(anchor="w", pady=(3, 0))
 
         # ---- Filtro rápido
         filter_bar = ttk.Frame(f); filter_bar.pack(fill="x", pady=(4,6))
         ttk.Label(filter_bar, text="Filtro rápido:").pack(side="left")
         self.var_filter = tk.StringVar(value="")
-        self.ent_filter = ttk.Entry(filter_bar, width=40, textvariable=self.var_filter)
+        self.ent_filter = ttk.Entry(filter_bar, width=24, textvariable=self.var_filter)
         self.ent_filter.pack(side="left", padx=6)
         ttk.Button(filter_bar, text="Aplicar filtro", command=self._apply_filter).pack(side="left", padx=(0,6))
         ttk.Button(filter_bar, text="Limpiar filtro", command=self._clear_filter).pack(side="left")
+        self.var_opciones_rangos = tk.BooleanVar(value=False)
+        ttk.Checkbutton(filter_bar, text="Opciones de rangos", variable=self.var_opciones_rangos,
+            command=self._toggle_opciones_rangos).pack(side="right")
         # Atajos + Live search inmediato
         self.ent_filter.bind("<Return>", lambda e: (self._apply_filter(), self._refocus_filter()))
         self.ent_filter.bind("<Escape>", lambda e: (self._clear_filter(), self._refocus_filter()))
@@ -4478,13 +4738,15 @@ class TivendoWindow(ttk.Frame):
                 "Precio2","RangoInicial2","RangoFinal2")
         self.columns = cols
         self.tree = ttk.Treeview(body, columns=cols, show="headings", height=22, selectmode="extended")
-        widths = (140, 360, 170, 120, 120, 120, 120, 120, 120)
+        widths = (100, 265, 165, 100, 90, 90, 100, 90, 90)
+        headings = ("Código", "Artículo", "Barra interna", "Precio nuevo", "Desde", "Hasta", "Precio 2", "Desde 2", "Hasta 2")
         for c,w in zip(cols, widths):
-            self.tree.heading(c, text=c)
+            self.tree.heading(c, text=headings[cols.index(c)])
             self.tree.column(c, width=w, anchor="w")
         self.tree.pack(side="left", fill="both", expand=True)
 
         vsb = ttk.Scrollbar(body, orient="vertical", command=self.tree.yview)
+        self.preview_vsb = vsb
         self.tree.configure(yscrollcommand=vsb.set)
         vsb.pack(side="left", fill="y")
 
@@ -4493,6 +4755,7 @@ class TivendoWindow(ttk.Frame):
         self.tree.tag_configure("stripe1", background=STRIPE_COLOR)
 
         side_shell = ttk.Frame(body, padding=(10, 0, 0, 0))
+        self.side_shell_rangos = side_shell
         side_shell.pack(side="left", fill="y")
         side_canvas = tk.Canvas(side_shell, width=228, background=UI["background"],
                                 highlightthickness=0, borderwidth=0)
@@ -4547,8 +4810,9 @@ class TivendoWindow(ttk.Frame):
         bottom = ttk.Frame(f); bottom.pack(fill="x", pady=(8,0))
         self.lbl_info = ttk.Label(bottom, text="", foreground="#555"); self.lbl_info.pack(side="left")
         ttk.Button(bottom, text="← Volver a pegar", command=lambda:self._show(self.stepB)).pack(side="right", padx=8)
-        ttk.Button(bottom, text="Generar Excel", command=self._export,
-                   style="Primary.TButton").pack(side="right")
+        self.btn_exportar_precios = ttk.Button(bottom, text="Guardar Excel para Tivendo", command=self._export,
+                   style="Primary.TButton")
+        self.btn_exportar_precios.pack(side="right")
 
         # Las columnas de la vista previa exceden el ancho de una pantalla.
         # Reservar primero espacio para acciones y controles laterales evita
@@ -4568,6 +4832,13 @@ class TivendoWindow(ttk.Frame):
         self.tree.pack(side="left", fill="both", expand=True)
 
         self._toggle_r2(initial=True)
+        self._toggle_opciones_rangos()
+
+    def _toggle_opciones_rangos(self):
+        if self.var_opciones_rangos.get():
+            self.side_shell_rangos.pack(side="right", fill="y", before=self.preview_vsb)
+        else:
+            self.side_shell_rangos.pack_forget()
 
     def _refocus_filter(self):
         try:
@@ -4579,7 +4850,6 @@ class TivendoWindow(ttk.Frame):
         if not self.enable_r2.get():
             for col in ("Precio2","RangoInicial2","RangoFinal2"):
                 self.tree.column(col, width=2, stretch=False, anchor="w")
-                self.tree.heading(col, text=col)
         else:
             self.tree.column("Precio2", width=120, stretch=True, anchor="w")
             self.tree.column("RangoInicial2", width=120, stretch=True, anchor="w")
@@ -4619,7 +4889,9 @@ class TivendoWindow(ttk.Frame):
             ins("", "end", values=(ident, nom, cbi, p1, ri1, rf1, p2, ri2, rf2), tags=(tag,))
 
         total = len(df)
-        self.lbl_info.config(text=f"Filas visibles: {total} | No encontradas visibles: {no_count}")
+        self.lbl_info.config(text=("PRÁCTICA · No se exporta" if self._modo_ejemplo_precios else
+                                   f"{total} fila(s) · {no_count} sin encontrar"))
+        self.btn_exportar_precios.config(state="disabled" if self._modo_ejemplo_precios else "normal")
         self._update_validator_counts(total_codes=total, total_prices=total, nofound=no_count)
 
     def _apply_striped_rows(self):
@@ -4771,6 +5043,9 @@ class TivendoWindow(ttk.Frame):
         return pd.DataFrame(data, columns=cols)
 
     def _export(self):
+        if self._modo_ejemplo_precios:
+            messagebox.showinfo("Modo práctica", "Vuelve a pegar, limpia el ejemplo y usa tus precios reales para guardar el Excel.")
+            return
         df_tabla = self._collect_df_from_tree()
         if df_tabla.empty:
             messagebox.showwarning("Sin datos", "No hay filas para exportar."); return
@@ -4779,6 +5054,10 @@ class TivendoWindow(ttk.Frame):
             df_tabla = df_tabla[df_tabla["Código"].astype(str).str.strip() != ""]
             if df_tabla.empty:
                 messagebox.showwarning("Sin válidas", "No hay filas válidas para exportar."); return
+
+        if not df_tabla["Precio1"].astype(str).str.fullmatch(r"[0-9]+(?:[.,][0-9]+)?").all():
+            messagebox.showwarning("Precios por corregir", "Hay precios vacíos o inválidos. Corrígelos con doble clic antes de guardar.")
+            return
 
         ok = df_tabla.copy()
         for col in ("RangoInicial2","RangoFinal2","Precio2"):
@@ -4799,7 +5078,7 @@ class TivendoWindow(ttk.Frame):
         except Exception as e:
             messagebox.showerror("Error al guardar", f"No se pudo escribir el Excel.\n{e}"); return
 
-        messagebox.showinfo("Listo", f"Archivo generado con rangos:\n{path}")
+        messagebox.showinfo("Excel listo para importar", f"Se guardaron {len(out)} cambios en:\n{path}\n\nSiguiente: importa este Excel en los cambios masivos de precios de Tivendo.")
 
     def _show(self, frame):
         for child in (self.stepA, self.stepB, self.stepC):
@@ -4833,6 +5112,75 @@ def normalizar_codigo_catalogo(valor: str) -> str:
     s = str(valor).strip().upper()
     s = _RE_NON_ALNUM.sub("", s)
     return s
+
+def leer_catalogo_articulos(ruta) -> pd.DataFrame:
+    """Lee el export original sin depender de posiciones fijas de filas o columnas."""
+    path = Path(ruta)
+    if path.suffix.lower() in (".xlsx", ".xls", ".xlsm"):
+        raw = pd.read_excel(path, header=None, dtype=str)
+    elif path.suffix.lower() == ".csv":
+        try:
+            raw = pd.read_csv(path, header=None, dtype=str, sep=None, engine="python")
+        except UnicodeDecodeError:
+            raw = pd.read_csv(path, header=None, dtype=str, sep=None, engine="python", encoding="latin-1")
+    else:
+        raise ValueError("Utiliza el listado de artículos exportado por Tivendo en Excel o CSV.")
+    for index, row in enumerate(raw.head(30).itertuples(index=False, name=None)):
+        headers = [_normalize_text("" if pd.isna(value) else str(value)) for value in row]
+        if "nombre" not in headers or not any(h in headers for h in ("identificador", "codigo")):
+            continue
+        ident = headers.index("identificador") if "identificador" in headers else headers.index("codigo")
+        names = {"codigo": ident, "nombre": headers.index("nombre")}
+        for output, candidates in (("precio", ("precio", "precio venta")),
+                                   ("activo", ("activo", "estado"))):
+            names[output] = next((headers.index(h) for h in candidates if h in headers), None)
+        result = pd.DataFrame({key: raw.iloc[index + 1:, column].fillna("").astype(str).str.strip()
+                               if column is not None else ""
+                               for key, column in names.items()})
+        result = result[result["codigo"].ne("")].reset_index(drop=True)
+        result.attrs["estado_disponible"] = names["activo"] is not None
+        if result.empty:
+            raise ValueError("El listado no contiene artículos. Se conserva el listado anterior.")
+        return result
+    raise ValueError("No se encontraron los encabezados Código/Identificador y Nombre en el listado de Tivendo.")
+
+
+def calcular_secuencia_articulos(catalogo: pd.DataFrame, reservados=()) -> dict:
+    """Continúa después del mayor A+6 activo; todos los códigos siguen reservados."""
+    codes = catalogo["codigo"].fillna("").astype(str).str.strip().str.upper()
+    names = catalogo["nombre"].fillna("").astype(str)
+    active = catalogo.get("activo", pd.Series("", index=catalogo.index)).fillna("").astype(str).map(_normalize_text)
+    valid = codes.str.fullmatch(r"A[0-9]{6}")
+    valid &= active.isin(("si", "s", "1", "true", "activo", "active"))
+    valid &= ~names.map(_normalize_text).str.match(r"^no\s+disponible\b")
+    valid &= names.str.strip().ne("")
+    summary = {"ultimo": "", "nombre": "", "siguiente": "", "validos": int(valid.sum()),
+               "ignorados": int((~valid).sum()),
+               "estado_disponible": catalogo.attrs.get("estado_disponible", "activo" in catalogo.columns)}
+    if not valid.any():
+        return summary
+    last_index = codes[valid].map(lambda value: int(value[1:])).idxmax()
+    last = codes.loc[last_index]
+    used = {normalizar_codigo_catalogo(value) for value in list(codes) + list(reservados)}
+    number = int(last[1:]) + 1
+    while number <= 999999 and f"A{number:06d}" in used:
+        number += 1
+    summary.update(ultimo=last, nombre=names.loc[last_index],
+                   siguiente=f"A{number:06d}" if number <= 999999 else "")
+    return summary
+
+
+def parsear_tabla_pegada(texto: str, columnas: int, encabezados) -> list:
+    rows = list(csv.reader(io.StringIO(texto), delimiter="\t"))
+    rows = [row for row in rows if any(cell.strip() for cell in row)]
+    if rows and _normalize_text(rows[0][0]) in encabezados:
+        rows.pop(0)
+    if not rows:
+        raise ValueError("Copia primero las filas de Excel que quieres pegar.")
+    if any(len(row) > columnas or any("\n" in cell or "\r" in cell for cell in row) for row in rows):
+        raise ValueError(f"Copia como máximo {columnas} columnas, con un artículo por fila y sin saltos de línea dentro de las celdas.")
+    return [(row + [""] * columnas)[:columnas] for row in rows]
+
 
 def buscar_siguiente_codigo_disponible(codigo_actual: str, codigos_catalogo_set, codigos_catalogo_norm_set) -> str:
     if not codigo_actual:
@@ -4878,6 +5226,12 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         self.df_catalogo = None
         self.codigos_catalogo_set = set()
         self.codigos_catalogo_norm_set = set()
+        self.catalogo_path = Path(catalogo_path) if catalogo_path else None
+        self._catalogo_cargando = False
+        self._catalogo_job = 0
+        self.var_codigo_inicial = tk.StringVar()
+        self.var_codigo_manual = tk.BooleanVar(value=False)
+        self._codigo_lote_inicial = ""
 
         # Cargamos siempre la versión más reciente de proveedores desde empresas.json
         _emp = load_empresas()
@@ -4924,33 +5278,59 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
                 self._start_async_catalogo_load(catalogo_path)
             except Exception:
                 pass
+        else:
+            self.lbl_catalogo_estado.config(text="Todavía no hay un listado cargado")
+            self.lbl_ultimo_articulo.config(text="Pulsa Actualizar listado y último código para comenzar.", style="Card.Warning.TLabel")
 
     def _crear_paso1(self):
-        _wizard_steps(self.frame_paso1, 1, ("Configurar", "Pegar artículos", "Revisar y exportar"))
+        _wizard_steps(self.frame_paso1, 1, ("Confirmar listado", "Pegar artículos", "Revisar y guardar"))
         lbl_titulo = ttk.Label(
             self.frame_paso1,
-            text="Configura el código inicial y el proveedor",
+            text="Primero confirma desde qué artículo continuar",
             style="Section.TLabel",
             wraplength=1150,
             justify="left",
         )
         lbl_titulo.pack(fill="x", padx=10, pady=(10, 5))
 
-        ttk.Label(self.frame_paso1, text="Ejemplo de código inicial: A020267. El programa continuará la numeración automáticamente.",
+        ttk.Label(self.frame_paso1, text="Prepararás un Excel para importar en Tivendo. Aquí todavía no se crean artículos.",
                   style="Muted.TLabel").pack(anchor="w", padx=10)
-        frame_conf = ttk.LabelFrame(self.frame_paso1, text="Configuración general")
-        frame_conf.pack(fill="x", padx=10, pady=5)
 
-        ttk.Label(frame_conf, text="Código identificador inicial:").grid(
+        frame_cat = ttk.Frame(self.frame_paso1, style="Card.TFrame", padding=12)
+        frame_cat.pack(fill="x", padx=10, pady=(12, 8))
+        frame_cat.columnconfigure(0, weight=1)
+        self.lbl_catalogo_estado = ttk.Label(frame_cat, text="Comprobando listado…", style="Card.Section.TLabel")
+        self.lbl_catalogo_estado.grid(row=0, column=0, sticky="w")
+        self.btn_actualizar_catalogo = ttk.Button(frame_cat, text="Actualizar listado y último código",
+            style="Primary.TButton", command=self._actualizar_catalogo_desde_tivendo)
+        self.btn_actualizar_catalogo.grid(row=0, column=1, sticky="e", padx=(10, 0))
+        self.lbl_catalogo_archivo = ttk.Label(frame_cat, text="", style="Card.Muted.TLabel", wraplength=850)
+        self.lbl_catalogo_archivo.grid(row=1, column=0, columnspan=2, sticky="w", pady=(5, 0))
+        self.lbl_catalogo_fecha = ttk.Label(frame_cat, text="", style="Card.Muted.TLabel")
+        self.lbl_catalogo_fecha.grid(row=2, column=0, columnspan=2, sticky="w", pady=(3, 0))
+        self.lbl_ultimo_articulo = ttk.Label(frame_cat, text="", style="Card.Success.TLabel", wraplength=850)
+        self.lbl_ultimo_articulo.grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Label(frame_cat, text="Mismo listado que en Inicio. Esta actualización descarga solo artículos.",
+            style="Card.Muted.TLabel").grid(row=4, column=0, columnspan=2, sticky="w", pady=(5, 0))
+
+        frame_conf = ttk.LabelFrame(self.frame_paso1, text="Numeración y categoría")
+        frame_conf.pack(fill="x", padx=10, pady=5)
+        frame_conf.columnconfigure(1, weight=1)
+
+        ttk.Label(frame_conf, text="Empezar desde:").grid(
             row=0, column=0, padx=5, pady=5, sticky="e"
         )
         self.entry_codigo_inicial = ttk.Entry(
-            frame_conf, textvariable=self.var_codigo_actual, width=15
+            frame_conf, textvariable=self.var_codigo_inicial, width=15, state="readonly"
         )
-        self.entry_codigo_inicial.grid(row=0, column=1, padx=5, pady=5)
+        self.entry_codigo_inicial.grid(row=0, column=1, padx=5, pady=5, sticky="w")
+        ttk.Checkbutton(frame_conf, text="Cambiar código manualmente", variable=self.var_codigo_manual,
+            command=self._toggle_codigo_manual).grid(row=0, column=2, columnspan=2, padx=8, pady=5, sticky="w")
+        ttk.Label(frame_conf, text="Se continúa después del mayor A + 6 números activo; no se rellenan huecos antiguos.",
+            style="Muted.TLabel").grid(row=1, column=0, columnspan=4, padx=8, pady=(0, 8), sticky="w")
 
-        ttk.Label(frame_conf, text="Proveedor (Id Categoría):").grid(
-            row=0, column=2, padx=5, pady=5, sticky="e"
+        ttk.Label(frame_conf, text="Categoría / proveedor (opcional):").grid(
+            row=2, column=0, padx=5, pady=5, sticky="e"
         )
         nombres_empresas = sorted(self.empresas_name_to_id.keys())
         # Guardamos la lista completa para poder filtrarla con el mini buscador
@@ -4959,54 +5339,38 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         self.combo_empresa = ttk.Combobox(
             frame_conf,
             textvariable=self.var_empresa_nombre,
-            values=nombres_empresas,
+            values=[""] + nombres_empresas,
             state="readonly",
             width=35,
         )
-        self.combo_empresa.grid(row=0, column=3, padx=5, pady=5, sticky="w")
-        if nombres_empresas:
-            self.combo_empresa.current(0)
+        self.combo_empresa.grid(row=2, column=1, padx=5, pady=5, sticky="w")
+        self.var_empresa_nombre.set("")
+        ttk.Button(frame_conf, text="Dejar sin categoría", command=lambda: self.var_empresa_nombre.set("")).grid(
+            row=2, column=2, columnspan=2, padx=8, pady=5, sticky="w")
 
         # Mini buscador de proveedor en vivo (para no recorrer toda la lista)
         self.var_empresa_search_p1 = tk.StringVar()
         entry_buscar = ttk.Entry(frame_conf, textvariable=self.var_empresa_search_p1, width=20)
         # Lo ubicamos a la derecha del combobox de proveedor
-        entry_buscar.grid(row=1, column=3, padx=5, pady=5, sticky="w")
-        ttk.Label(frame_conf, text="Filtrar proveedores:").grid(row=1, column=2, padx=5, pady=5, sticky="e")
+        entry_buscar.grid(row=3, column=1, padx=5, pady=5, sticky="w")
+        ttk.Label(frame_conf, text="Buscar categoría:").grid(row=3, column=0, padx=5, pady=5, sticky="e")
         entry_buscar.bind("<KeyRelease>", self._on_empresa_search_p1)
 
         btn_instrucciones = ttk.Button(
             frame_conf, text="Ver instrucciones", command=self._abrir_instrucciones
         )
-        btn_instrucciones.grid(row=1, column=1, padx=10, pady=5, sticky="w")
-
-        # Información sobre el catálogo utilizado para validar códigos
-        frame_cat = ttk.LabelFrame(
-            self.frame_paso1,
-            text="Listado de artículos para validar códigos",
-        )
-        frame_cat.pack(fill="x", padx=10, pady=5)
-
-        ttk.Label(
-            frame_cat,
-            text=(
-                "Se está utilizando el LISTADO DE ARTÍCULOS cargado desde el menú principal "
-                "para validar códigos ya existentes.\n"
-                "Si necesitas cambiar ese archivo, vuelve al menú principal y selecciona otro listado."
-            ),
-            wraplength=1150,
-            justify="left",
-        ).grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        btn_instrucciones.grid(row=3, column=2, padx=8, pady=5, sticky="w")
 
         frame_nav = ttk.Frame(self.frame_paso1)
-        frame_nav.pack(fill="x", padx=10, pady=10)
+        frame_nav.pack(side="bottom", fill="x", padx=10, pady=10)
 
         btn_anterior_p1 = ttk.Button(frame_nav, text="← Anterior", state="disabled")
         btn_anterior_p1.pack(side="left")
 
-        btn_siguiente = ttk.Button(frame_nav, text="Pegar artículos →", command=self._ir_a_paso2,
-                                  style="Primary.TButton")
-        btn_siguiente.pack(side="right")
+        self.btn_paso2 = ttk.Button(frame_nav, text="Continuar: pegar artículos →", command=self._ir_a_paso2,
+                                  style="Primary.TButton", state="disabled")
+        self.btn_paso2.pack(side="right")
+        self.var_codigo_inicial.trace_add("write", lambda *_: self._actualizar_estado_codigo())
 
     def _on_empresa_search_p1(self, event=None):
         """Filtra en vivo la lista de proveedores del PASO 1 según el mini buscador."""
@@ -5017,8 +5381,57 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
             self.var_empresa_nombre,
         )
 
+    def _toggle_codigo_manual(self):
+        self.entry_codigo_inicial.config(state="normal" if self.var_codigo_manual.get() else "readonly")
+        if not self.var_codigo_manual.get() and self.df_catalogo is not None:
+            self.var_codigo_inicial.set(calcular_secuencia_articulos(self.df_catalogo)["siguiente"])
+        self._actualizar_estado_codigo()
+
+    def _actualizar_estado_codigo(self):
+        ready = self.df_catalogo is not None and not self._catalogo_cargando
+        valid = re.fullmatch(r"A[0-9]{6}", self.var_codigo_inicial.get().strip().upper()) is not None
+        self.btn_paso2.config(state="normal" if ready and valid else "disabled")
+
+    def _aplicar_catalogo(self, ruta, catalogo):
+        if not self.winfo_exists():
+            return
+        self._catalogo_cargando = False
+        self.catalogo_path = Path(ruta)
+        self.df_catalogo = catalogo
+        self.codigos_catalogo_set = set(catalogo["codigo"].astype(str).str.strip())
+        self.codigos_catalogo_norm_set = {normalizar_codigo_catalogo(code) for code in self.codigos_catalogo_set}
+        summary = calcular_secuencia_articulos(catalogo)
+        self.lbl_catalogo_estado.config(text=f"Listado comprobado · {len(catalogo):,} artículos")
+        self.lbl_catalogo_archivo.config(text=f"Archivo: {self.catalogo_path.name}")
+        self.lbl_catalogo_fecha.config(text=f"Última descarga del listado: {article_download_label(self.catalogo_path)}")
+        if summary["siguiente"]:
+            text = f"Último válido: {summary['ultimo']} · {summary['nombre']}\nSiguiente para crear: {summary['siguiente']}"
+            style = "Card.Success.TLabel"
+        else:
+            text = ("No se puede proponer un código: falta la columna Activo/Estado." if not summary["estado_disponible"]
+                    else "No se encontró una secuencia activa A + 6 números con espacio para continuar.")
+            text += " Actualiza el listado o revisa el código manualmente."
+            style = "Card.Warning.TLabel"
+        self.lbl_ultimo_articulo.config(text=text, style=style)
+        if not self.var_codigo_manual.get():
+            self.var_codigo_inicial.set(summary["siguiente"])
+        self.btn_actualizar_catalogo.config(state="normal")
+        self._actualizar_estado_codigo()
+
+    def _actualizar_catalogo_desde_tivendo(self):
+        # Invalida cualquier lectura anterior que todavía esté en curso.
+        self._catalogo_job += 1
+        self.master._actualizar_solo_articulos(self._catalogo_actualizado)
+
+    def _catalogo_actualizado(self, ruta, catalogo):
+        self.var_codigo_manual.set(False)
+        self.entry_codigo_inicial.config(state="readonly")
+        self._aplicar_catalogo(ruta, catalogo)
+        self.df_import = self.df_import.head(0).copy()
+        self._refrescar_tabla()
+
     def _crear_paso2(self):
-        _wizard_steps(self.frame_paso2, 2, ("Configurar", "Pegar artículos", "Revisar y exportar"))
+        _wizard_steps(self.frame_paso2, 2, ("Confirmar listado", "Pegar artículos", "Revisar y guardar"))
         lbl_titulo = ttk.Label(
             self.frame_paso2,
             text="Pega los datos de los artículos",
@@ -5028,68 +5441,39 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         )
         lbl_titulo.pack(fill="x", padx=10, pady=(10, 5))
         ttk.Label(self.frame_paso2,
-                  text="Cada línea es un artículo. Mantén el mismo orden en las cuatro columnas; la barra externa es opcional.",
+                  text="Una fila por artículo. Copia desde Excel: nombre, precio, barra interna y, si lo tienes, código de proveedor.",
                   style="Muted.TLabel").pack(anchor="w", padx=10)
+
+        toolbar = ttk.Frame(self.frame_paso2)
+        toolbar.pack(fill="x", padx=10, pady=(8, 0))
+        ttk.Button(toolbar, text="Pegar tabla de Excel", command=self._pegar_tabla_articulos,
+            style="Primary.TButton").pack(side="left")
+        ttk.Button(toolbar, text="Probar con un ejemplo", command=self._ejemplo_articulos).pack(side="left", padx=8)
+        ttk.Label(toolbar, text="También puedes pegar cada columna por separado.",
+            style="Muted.TLabel").pack(side="left", padx=4)
 
         frame_cols = ttk.LabelFrame(self.frame_paso2, text="Ingreso masivo (uno por línea en cada columna)")
         frame_cols.pack(fill="both", expand=True, padx=10, pady=5)
 
         frame_cols.rowconfigure(0, weight=1)
-
-        col1 = ttk.Frame(frame_cols)
-        col1.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
-        frame_cols.columnconfigure(0, weight=3)
-
-        ttk.Label(col1, text="Nombre (uno por línea)").pack(anchor="w")
-        self.text_nombre = _style_text(tk.Text(col1, wrap="none", height=20, width=40))
-        self.text_nombre.pack(fill="both", expand=True, pady=2)
-        scroll_y_nombre = ttk.Scrollbar(col1, orient="vertical", command=self.text_nombre.yview)
-        scroll_y_nombre.pack(side="right", fill="y")
-        scroll_x_nombre = ttk.Scrollbar(col1, orient="horizontal", command=self.text_nombre.xview)
-        scroll_x_nombre.pack(side="bottom", fill="x")
-        self.text_nombre.configure(yscrollcommand=scroll_y_nombre.set, xscrollcommand=scroll_x_nombre.set)
-
-        col2 = ttk.Frame(frame_cols)
-        col2.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
-        frame_cols.columnconfigure(1, weight=1)
-
-        ttk.Label(col2, text="Precio (uno por línea)").pack(anchor="w")
-        self.text_precio = _style_text(tk.Text(col2, wrap="none", height=20, width=14))
-        self.text_precio.pack(fill="both", expand=True, pady=2)
-        scroll_y_precio = ttk.Scrollbar(col2, orient="vertical", command=self.text_precio.yview)
-        scroll_y_precio.pack(side="right", fill="y")
-        scroll_x_precio = ttk.Scrollbar(col2, orient="horizontal", command=self.text_precio.xview)
-        scroll_x_precio.pack(side="bottom", fill="x")
-        self.text_precio.configure(yscrollcommand=scroll_y_precio.set, xscrollcommand=scroll_x_precio.set)
-
-        col3 = ttk.Frame(frame_cols)
-        col3.grid(row=0, column=2, sticky="nsew", padx=5, pady=5)
-        frame_cols.columnconfigure(2, weight=1)
-
-        ttk.Label(col3, text="Código barra interno (uno por línea)").pack(anchor="w")
-        self.text_codint = _style_text(tk.Text(col3, wrap="none", height=20, width=18))
-        self.text_codint.pack(fill="both", expand=True, pady=2)
-        scroll_y_codint = ttk.Scrollbar(col3, orient="vertical", command=self.text_codint.yview)
-        scroll_y_codint.pack(side="right", fill="y")
-        scroll_x_codint = ttk.Scrollbar(col3, orient="horizontal", command=self.text_codint.xview)
-        scroll_x_codint.pack(side="bottom", fill="x")
-        self.text_codint.configure(yscrollcommand=scroll_y_codint.set, xscrollcommand=scroll_x_codint.set)
-
-        col4 = ttk.Frame(frame_cols)
-        col4.grid(row=0, column=3, sticky="nsew", padx=5, pady=5)
-        frame_cols.columnconfigure(3, weight=1)
-
-        ttk.Label(col4, text="Código barra externo (uno por línea, opcional)").pack(anchor="w")
-        self.text_codext = _style_text(tk.Text(col4, wrap="none", height=20, width=18))
-        self.text_codext.pack(fill="both", expand=True, pady=2)
-        scroll_y_codext = ttk.Scrollbar(col4, orient="vertical", command=self.text_codext.yview)
-        scroll_y_codext.pack(side="right", fill="y")
-        scroll_x_codext = ttk.Scrollbar(col4, orient="horizontal", command=self.text_codext.xview)
-        scroll_x_codext.pack(side="bottom", fill="x")
-        self.text_codext.configure(yscrollcommand=scroll_y_codext.set, xscrollcommand=scroll_x_codext.set)
+        for index, (attribute, title, weight) in enumerate((
+                ("text_nombre", "1. Nombre *", 3), ("text_precio", "2. Precio *", 1),
+                ("text_codint", "3. Barra interna *", 1), ("text_codext", "4. Cód. proveedor (opcional)", 1))):
+            column = ttk.Frame(frame_cols)
+            column.grid(row=0, column=index, sticky="nsew", padx=5, pady=5)
+            frame_cols.columnconfigure(index, weight=weight)
+            setattr(self, attribute, _paste_text_column(column, title))
 
         frame_btns = ttk.Frame(self.frame_paso2)
         frame_btns.pack(fill="x", padx=10, pady=5)
+        self.lbl_estado_pegado = ttk.Label(frame_btns, text="Pega los datos para comprobarlos aquí.", style="Muted.TLabel", wraplength=700)
+        self.lbl_estado_pegado.pack(side="left")
+        self._modo_ejemplo = False
+        for widget in (self.text_nombre, self.text_precio, self.text_codint, self.text_codext):
+            widget.tag_configure("error_dato", background="#FDEBEC")
+            widget.bind("<<Modified>>", self._al_editar_articulos)
+        self.text_nombre.bind("<Control-v>", self._pegar_excel_en_nombre)
+        self.text_nombre.bind("<Control-V>", self._pegar_excel_en_nombre)
 
         btn_limpiar = ttk.Button(frame_btns, text="Limpiar todo", command=self.limpiar_textos_paso2)
         btn_limpiar.pack(side="right", padx=5)
@@ -5100,9 +5484,9 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         btn_anterior = ttk.Button(frame_nav, text="← Anterior", command=lambda: self._mostrar_paso(1))
         btn_anterior.pack(side="left")
 
-        btn_siguiente = ttk.Button(frame_nav, text="Revisar artículos →", command=self._procesar_y_ir_a_paso3,
-                                  style="Primary.TButton")
-        btn_siguiente.pack(side="right")
+        self.btn_revisar_articulos = ttk.Button(frame_nav, text="Comprobar y revisar artículos →", command=self._procesar_y_ir_a_paso3,
+                                  style="Primary.TButton", state="disabled")
+        self.btn_revisar_articulos.pack(side="right")
         frame_cols.pack_forget()
         frame_btns.pack_forget()
         frame_nav.pack_forget()
@@ -5110,8 +5494,77 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         frame_btns.pack(side="bottom", fill="x", padx=10, pady=5)
         frame_cols.pack(side="top", fill="both", expand=True, padx=10, pady=5)
 
+    def _lineas_articulos(self):
+        return [widget.get("1.0", "end-1c").splitlines()
+                for widget in (self.text_nombre, self.text_precio, self.text_codint, self.text_codext)]
+
+    def _al_editar_articulos(self, event):
+        if event.widget.edit_modified():
+            event.widget.edit_modified(False)
+            self._actualizar_pegado_articulos()
+
+    def _actualizar_pegado_articulos(self):
+        columns = self._lineas_articulos()
+        widgets = (self.text_nombre, self.text_precio, self.text_codint, self.text_codext)
+        for widget in widgets:
+            widget.tag_remove("error_dato", "1.0", "end")
+        count = 0
+        errors = []
+        for index in range(max(map(len, columns), default=0)):
+            row = [column[index].strip() if index < len(column) else "" for column in columns]
+            if not any(row):
+                continue
+            count += 1
+            for col, label in ((0, "nombre"), (1, "precio"), (2, "barra interna")):
+                if not row[col] or (col == 1 and (not re.fullmatch(r"[\d$.,\s]+", row[col]) or not _RE_NO_DIGITS.sub("", row[col]))):
+                    errors.append(f"fila {index + 1}: {label}")
+                    widgets[col].tag_add("error_dato", f"{index + 1}.0", f"{index + 1}.end+1c")
+        if errors:
+            text = f"{count} artículo(s) · Revisa {errors[0]}" + (f" y {len(errors)-1} dato(s) más." if len(errors) > 1 else ".")
+            style = "Warning.TLabel"
+        elif count:
+            text = ("PRÁCTICA · " if self._modo_ejemplo else "") + f"{count} artículo(s) · Datos completos para revisar."
+            style = "Success.TLabel"
+        else:
+            text, style = "Pega los datos. Los campos con * son obligatorios.", "Muted.TLabel"
+        self.lbl_estado_pegado.config(text=text, style=style)
+        self.btn_revisar_articulos.config(state="normal" if count and not errors else "disabled")
+        return count > 0 and not errors
+
+    def _escribir_tabla_articulos(self, rows, ejemplo=False):
+        self._modo_ejemplo = ejemplo
+        for column, widget in enumerate((self.text_nombre, self.text_precio, self.text_codint, self.text_codext)):
+            widget.delete("1.0", "end")
+            widget.insert("1.0", "\n".join(row[column] for row in rows))
+        self._actualizar_pegado_articulos()
+
+    def _pegar_excel_en_nombre(self, event=None):
+        try:
+            if "\t" in self.clipboard_get():
+                self._pegar_tabla_articulos()
+                return "break"
+        except tk.TclError:
+            pass
+
+    def _pegar_tabla_articulos(self):
+        try:
+            rows = parsear_tabla_pegada(self.clipboard_get(), 4, {"nombre", "nombre del articulo"})
+            if any(widget.get("1.0", "end-1c").strip() for widget in (self.text_nombre, self.text_precio, self.text_codint, self.text_codext)):
+                if not messagebox.askyesno("Reemplazar datos pegados", "¿Reemplazar las columnas actuales con la tabla que copiaste?"):
+                    return
+            self._escribir_tabla_articulos(rows)
+        except (ValueError, tk.TclError) as exc:
+            messagebox.showwarning("Cómo pegar desde Excel", f"{exc}\n\nOrden: Nombre | Precio | Barra interna | Código de proveedor (opcional).")
+
+    def _ejemplo_articulos(self):
+        if any(widget.get("1.0", "end-1c").strip() for widget in (self.text_nombre, self.text_precio, self.text_codint, self.text_codext)):
+            if not messagebox.askyesno("Probar ejemplo", "¿Reemplazar los datos pegados por dos artículos de práctica?"):
+                return
+        self._escribir_tabla_articulos([["GALLETAS DE EJEMPLO 100 G", "1290", "7800000000001", "GAL001"],
+                                        ["JUGO DE EJEMPLO 1 L", "1890", "7800000000002", "JUG002"]], ejemplo=True)
+
     def _crear_paso3(self):
-        _wizard_steps(self.frame_paso3, 3, ("Configurar", "Pegar artículos", "Revisar y exportar"))
+        _wizard_steps(self.frame_paso3, 3, ("Confirmar listado", "Pegar artículos", "Revisar y guardar"))
         lbl_titulo = ttk.Label(
             self.frame_paso3,
             text="Revisa los artículos y genera el Excel",
@@ -5120,9 +5573,9 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
             justify="left"
         )
         lbl_titulo.pack(fill="x", padx=10, pady=(10, 5))
-        ttk.Label(self.frame_paso3, text="Revisa cada columna. Haz doble clic en una celda para corregirla antes de guardar.",
+        ttk.Label(self.frame_paso3, text="Haz doble clic para corregir. Al guardar obtendrás un Excel: después debes importarlo en Tivendo.",
                   style="Muted.TLabel").pack(anchor="w", padx=10)
-        self.lbl_resumen_ingreso = ttk.Label(self.frame_paso3, text="", style="Success.TLabel")
+        self.lbl_resumen_ingreso = ttk.Label(self.frame_paso3, text="", style="Success.TLabel", wraplength=900)
         self.lbl_resumen_ingreso.pack(anchor="w", padx=10, pady=(6, 0))
 
         frame_archivo = ttk.LabelFrame(self.frame_paso3, text="Configuración del archivo de salida")
@@ -5135,12 +5588,15 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
             row=0, column=1, padx=5, pady=5, sticky="w"
         )
 
-        btn_generar = ttk.Button(
+        self.btn_generar_articulos = ttk.Button(
             frame_archivo,
-            text="Generar Excel de ingreso masivo",
+            text="Guardar Excel para Tivendo",
             command=self.generar_excel, style="Primary.TButton"
         )
-        btn_generar.grid(row=0, column=2, padx=10, pady=5, sticky="w")
+        self.btn_generar_articulos.grid(row=0, column=2, padx=10, pady=5, sticky="w")
+        self.var_ver_todos_campos = tk.BooleanVar(value=False)
+        ttk.Checkbutton(frame_archivo, text="Ver todos los campos del Excel", variable=self.var_ver_todos_campos,
+            command=self._toggle_campos_importacion).grid(row=1, column=0, columnspan=3, padx=8, pady=(0, 5), sticky="w")
 
         frame_tabla = ttk.LabelFrame(self.frame_paso3, text="Vista previa archivo de ingreso masivo")
         frame_tabla.pack(fill="both", expand=True, padx=10, pady=5)
@@ -5159,12 +5615,15 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         self.tree.configure(yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set)
 
         for col in self.df_import.columns:
-            self.tree.heading(col, text=col)
+            self.tree.heading(col, text={"Código barra interno": "Barra interna", "Código barra externo": "Barra externa",
+                                         "Id Categoría": "Categoría"}.get(col, col))
             self.tree.column(col, anchor="w", stretch=False, width=120)
+        self._toggle_campos_importacion()
 
         # Colores alternados tipo Excel
         self.tree.tag_configure("fila_par", background=STRIPE_COLOR)
         self.tree.tag_configure("fila_impar", background="#FFFFFF")
+        self.tree.tag_configure("error_fila", background="#FDEBEC")
 
         # Doble click para editar celdas (menos la columna Código)
         self.tree.bind("<Double-1>", self._on_tree_double_click)
@@ -5181,6 +5640,10 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         frame_nav.pack(side="bottom", fill="x", padx=10, pady=10)
         frame_tabla.pack(side="top", fill="both", expand=True, padx=10, pady=5)
 
+    def _toggle_campos_importacion(self):
+        self.tree.configure(displaycolumns="#all" if self.var_ver_todos_campos.get() else
+            ("Código", "Nombre", "Precio", "Código barra interno", "Código barra externo"))
+
     def _ajustar_anchos_columnas(self):
         """Ajusta anchos de columnas en O(n): un solo recorrido sobre todas las filas."""
         if not self.tree:
@@ -5192,9 +5655,11 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
                 l = len(self.tree.set(item, col))
                 if l > max_lens[col]:
                     max_lens[col] = l
+        font = tkfont.Font(font=("Segoe UI", 10, "bold"))
         for col, max_len in max_lens.items():
-            width = max(80, min(400, max_len * 7))
-            self.tree.column(col, width=width, stretch=False, anchor="w")
+            heading = self.tree.heading(col, "text")
+            width = max(90, min(420, max_len * 7 + 24), font.measure(heading) + 24)
+            self.tree.column(col, width=width, minwidth=90, stretch=col == "Nombre", anchor="w")
 
     def _mostrar_paso(self, n: int):
         for f in (self.frame_paso1, self.frame_paso2, self.frame_paso3):
@@ -5227,7 +5692,9 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         if col_index < 0 or col_index >= len(columnas):
             return
 
-        col_name = columnas[col_index]
+        visibles = self.tree["displaycolumns"]
+        col_name = columnas[col_index] if visibles == ("#all",) else visibles[col_index]
+        col_index = columnas.index(col_name)
 
         # No permitir editar el código
         if col_name == "Código":
@@ -5255,6 +5722,8 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         editor.place(x=x, y=y, width=w, height=h)
 
         def _guardar_edicion(event=None):
+            if self._tree_editor is not editor:
+                return
             nuevo_valor = editor.get()
             # Actualizar Treeview
             valores_fila = list(self.tree.item(item_id, "values"))
@@ -5264,6 +5733,7 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
             self.df_import.at[row_index, col_name] = nuevo_valor
             editor.destroy()
             self._tree_editor = None
+            self._refrescar_tabla()
 
         def _cancelar_edicion(event=None):
             editor.destroy()
@@ -5368,11 +5838,23 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         return False
 
     def _ir_a_paso2(self):
+        if self.df_catalogo is None or self._catalogo_cargando:
+            messagebox.showwarning("Listado pendiente", "Espera a que termine la comprobación o actualiza el listado.")
+            return
+        codigo = self.var_codigo_inicial.get().strip().upper()
+        if not re.fullmatch(r"A[0-9]{6}", codigo):
+            messagebox.showwarning("Revisa el código", "Usa A seguida de 6 números, por ejemplo A022767.")
+            return
+        self.var_codigo_actual.set(codigo)
         if not self.validar_codigo_inicial():
             return
+        self.var_codigo_inicial.set(self.var_codigo_actual.get())
         self._mostrar_paso(2)
 
     def _procesar_y_ir_a_paso3(self):
+        if not self._actualizar_pegado_articulos():
+            messagebox.showwarning("Revisa las columnas", "Completa los datos marcados antes de continuar.")
+            return
         exito = self.procesar_lista_paso2()
         if exito:
             self._ir_a_paso3()
@@ -5398,9 +5880,9 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         body.pack(fill="both", expand=True)
         _page_heading(body, "Cómo preparar el ingreso masivo", "Sigue los tres pasos antes de guardar el archivo.")
         steps = (
-            ("1. Configurar", "Ingresa el código inicial, por ejemplo A020267, y elige un proveedor. Si el código existe, elige reemplazarlo o continuar con el siguiente disponible."),
-            ("2. Pegar artículos", "Pega nombre, precio y código de barra interno en el mismo orden: una línea por artículo. La barra externa es opcional."),
-            ("3. Revisar y exportar", "Corrige los datos con doble clic en la vista previa, elige el nombre del archivo y genera el Excel. Tivendo requiere al menos dos artículos con código."),
+            ("1. Confirmar listado", "Actualiza el listado de Tivendo y revisa la fecha. Se continúa después del mayor A + 6 números activo, excluyendo NO DISPONIBLE. La categoría es opcional y queda vacía."),
+            ("2. Pegar artículos", "Copia de Excel nombre, precio y barra interna. La cuarta columna, código de proveedor, es opcional. Usa Pegar tabla de Excel o pega las columnas por separado. El ejemplo es para practicar y no se exporta."),
+            ("3. Revisar y guardar", "Corrige con doble clic y guarda el Excel. Después impórtalo en el ingreso masivo de Tivendo. Guardarlo aquí todavía no crea artículos. Se necesitan al menos dos filas."),
         )
         for title, detail in steps:
             ttk.Label(body, text=title, style="Section.TLabel").pack(anchor="w", pady=(4, 0))
@@ -5410,6 +5892,12 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
                    style="Primary.TButton").pack(anchor="e")
 
     def generar_excel(self):
+        if self._modo_ejemplo:
+            messagebox.showinfo("Modo práctica", "Vuelve a Pegar artículos, limpia el ejemplo y pega los datos reales para guardar un Excel.")
+            return
+        if self._errores_preview_articulos():
+            messagebox.showwarning("Revisa los datos", "Corrige las filas marcadas en rojo antes de guardar el Excel.")
+            return
         if self.df_import.empty:
             messagebox.showwarning("Atención", "No hay artículos para generar el archivo.")
             return
@@ -5457,28 +5945,50 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
             with pd.ExcelWriter(ruta, engine="openpyxl") as writer:
                 df_salida.to_excel(writer, index=False)
 
-            messagebox.showinfo("Éxito", f"Archivo de ingreso masivo generado:\n{ruta}")
+            messagebox.showinfo("Excel listo para importar", f"Se guardaron {len(df_salida)} artículos en:\n{ruta}\n\nSiguiente: importa este Excel en el ingreso masivo de artículos de Tivendo.")
         except Exception as e:
             messagebox.showerror("Error", f"No se pudo guardar el archivo.\n\nDetalle: {e}")
+
+    def _errores_preview_articulos(self):
+        errors = set()
+        for index, row in self.df_import.iterrows():
+            if (not str(row["Nombre"]).strip() or not str(row["Código barra interno"]).strip()
+                    or not re.fullmatch(r"[0-9]+", str(row["Precio"]).strip())
+                    or not re.fullmatch(r"A[0-9]{6}", str(row["Código"]))):
+                errors.add(index)
+        return errors
 
     def _refrescar_tabla(self):
         if not self.tree:
             return
         total = len(self.df_import)
+        errors = self._errores_preview_articulos()
+        ready = total >= 2 and not errors and not self._modo_ejemplo
+        summary = ("PRÁCTICA · No se exporta. Vuelve y pega tus datos reales." if self._modo_ejemplo else
+                   f"{total} artículo(s) · " + (f"{len(errors)} fila(s) por corregir" if errors else
+                   "Listo para guardar" if total >= 2 else "Se necesitan al menos 2 para guardar"))
+        if total:
+            summary += f" · {self.df_import.iloc[0]['Código']} → {self.df_import.iloc[-1]['Código']}"
+            summary += " · " + ("Categoría: " + self.var_empresa_nombre.get() if self.var_empresa_nombre.get() else "Sin categoría")
         self.lbl_resumen_ingreso.config(
-            text=f"{total} artículo(s) en la vista previa · "
-                 + ("Listo para revisar" if total >= 2 else "Se requieren al menos 2 para exportar"),
-            style="Success.TLabel" if total >= 2 else "Warning.TLabel",
+            text=summary,
+            style="Success.TLabel" if ready else "Warning.TLabel",
         )
+        self.btn_generar_articulos.config(state="normal" if ready else "disabled")
         self.tree.delete(*self.tree.get_children())
         ins = self.tree.insert
         for idx, row_vals in enumerate(self.df_import.itertuples(index=False, name=None)):
-            tag = "fila_par" if idx % 2 == 0 else "fila_impar"
+            tag = "error_fila" if idx in errors else "fila_par" if idx % 2 == 0 else "fila_impar"
             ins("", "end", values=row_vals, tags=(tag,))
         self._ajustar_anchos_columnas()
 
     def _start_async_catalogo_load(self, ruta):
         """Carga el catálogo en un hilo para no congelar la apertura."""
+        self._catalogo_job += 1
+        job = self._catalogo_job
+        self._catalogo_cargando = True
+        self.btn_actualizar_catalogo.config(state="disabled")
+        self._actualizar_estado_codigo()
         try:
             self.master.config(cursor="watch")
         except Exception:
@@ -5493,20 +6003,24 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
                 err = str(e)
 
             def apply():
+                if not self.winfo_exists() or job != self._catalogo_job:
+                    return
                 try:
                     self.master.config(cursor="")
                 except Exception:
                     pass
 
                 if err:
-                    # Si falla, no cerramos: solo dejamos que el usuario cargue manualmente
+                    self._catalogo_cargando = False
+                    self.btn_actualizar_catalogo.config(state="normal")
+                    self.lbl_catalogo_estado.config(text="No se pudo comprobar el listado")
+                    self.lbl_ultimo_articulo.config(text=err, style="Card.Warning.TLabel")
+                    self._actualizar_estado_codigo()
                     return
 
                 try:
                     df_catalogo, set_cod, set_norm = result
-                    self.df_catalogo = df_catalogo
-                    self.codigos_catalogo_set = set_cod
-                    self.codigos_catalogo_norm_set = set_norm
+                    self._aplicar_catalogo(ruta, df_catalogo)
                 except Exception:
                     pass
 
@@ -5519,37 +6033,14 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
 
     def _parse_catalogo_for_sets(self, ruta):
         """Lee el catálogo y devuelve (df_catalogo, codigos_set, codigos_norm_set). No toca la UI."""
-        ext = Path(ruta).suffix.lower()  # acepta str o Path
-        if ext in [".xlsx", ".xls"]:
-            df_raw = pd.read_excel(ruta, header=None)
-        elif ext == ".csv":
-            try:
-                df_raw = pd.read_csv(ruta, header=None)
-            except UnicodeDecodeError:
-                df_raw = pd.read_csv(ruta, header=None, encoding="latin-1", sep=";")
-        else:
-            raise ValueError("Formato de archivo no soportado.")
-
-        if df_raw.shape[0] < 6:
-            raise ValueError("El archivo no tiene al menos 6 filas para usar como catálogo.")
-        if df_raw.shape[1] < 4:
-            raise ValueError(
-                f"El archivo tiene solo {df_raw.shape[1]} columna(s); "
-                "se necesitan al menos 4 (Código, Nombre, ?, Precio)."
-            )
-
-        df = df_raw.iloc[5:, [0, 1, 3]].copy()
-        df.columns = ["codigo", "nombre", "precio"]
-        df = df.dropna(subset=["codigo"])
-        df = df.astype(str).apply(lambda s: s.str.strip())
-        df_catalogo = df.reset_index(drop=True)
+        df_catalogo = leer_catalogo_articulos(ruta)
 
         cod_series = df_catalogo["codigo"].astype(str).str.strip()
         codigos_set = set(cod_series)
         codigos_norm_set = set(cod_series.map(normalizar_codigo_catalogo))
         return df_catalogo, codigos_set, codigos_norm_set
 
-    def agregar_articulo(self):
+    def agregar_articulo(self, refrescar=True):
         codigo = self.var_codigo_actual.get().strip()
         nombre = self.var_nombre.get().strip().upper()
         precio = self.var_precio.get().strip()
@@ -5560,8 +6051,8 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         if not codigo:
             messagebox.showwarning("Atención", "Debes ingresar el código identificador inicial (Paso 1).")
             return
-        if not empresa_nombre:
-            messagebox.showwarning("Atención", "Debes seleccionar un Proveedor (Id Categoría) en el Paso 1.")
+        if not re.fullmatch(r"A[0-9]{6}", codigo):
+            messagebox.showwarning("Código fuera de secuencia", "El código debe tener A + 6 números. Revisa el código inicial y la cantidad de artículos.")
             return
         if not nombre:
             messagebox.showwarning("Atención", "Debes ingresar el Nombre del artículo.")
@@ -5651,9 +6142,11 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
             [self.df_import, pd.DataFrame([nueva_fila])],
             ignore_index=True
         )
-        self._refrescar_tabla()
+        if refrescar:
+            self._refrescar_tabla()
 
-        nuevo_codigo = incrementar_codigo_identificador(codigo)
+        nuevo_codigo = buscar_siguiente_codigo_disponible(
+            codigo, self.codigos_catalogo_set, self.codigos_catalogo_norm_set)
         self.var_codigo_actual.set(nuevo_codigo)
 
         self.limpiar_campos()
@@ -5674,7 +6167,10 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         self.var_cod_barra_ext.set("")
 
     def procesar_lista_paso2(self) -> bool:
-        codigo_inicial = self.var_codigo_actual.get().strip()
+        if not self._actualizar_pegado_articulos():
+            messagebox.showwarning("Revisa las columnas", "Completa los datos marcados en rojo antes de revisar los artículos.")
+            return False
+        codigo_inicial = self.var_codigo_inicial.get().strip()
         if not codigo_inicial:
             messagebox.showwarning(
                 "Atención",
@@ -5754,7 +6250,7 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
                 self.var_cod_barra_ext.set("")
 
             filas_antes = len(self.df_import)
-            self.agregar_articulo()
+            self.agregar_articulo(refrescar=False)
             filas_despues = len(self.df_import)
 
             if filas_despues > filas_antes:
@@ -5776,18 +6272,16 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
             )
             return False
 
-        messagebox.showinfo(
-            "Importación masiva finalizada",
-            f"Filas procesadas: {total_filas}\n"
-            f"Artículos agregados correctamente: {agregados_ok}"
-        )
+        self._refrescar_tabla()
         return True
 
     def limpiar_textos_paso2(self):
+        self._modo_ejemplo = False
         self.text_nombre.delete("1.0", "end")
         self.text_precio.delete("1.0", "end")
         self.text_codint.delete("1.0", "end")
         self.text_codext.delete("1.0", "end")
+        self._actualizar_pegado_articulos()
 
 def main():
     app = RootApp()
