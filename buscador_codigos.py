@@ -102,7 +102,7 @@ _RE_CODE_TOKEN = re.compile(r"[a-z0-9-]{3,}")  # valida cada trozo de codigo (le
 
 STRIPE_COLOR = "#F3F6FA"
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v143"
+APP_VERSION  = "v144"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -4592,16 +4592,22 @@ class TivendoWindow(ttk.Frame):
         article_box = ttk.Frame(f, style="Card.TFrame", padding=10)
         article_box.pack(fill="x", pady=(4, 8))
         article_box.columnconfigure(0, weight=1)
+        ttk.Label(article_box, text="Artículos", style="Card.Section.TLabel").grid(row=0, column=0, sticky="w")
         self.lbl_listado = ttk.Label(
             article_box,
             text="Listado aún no cargado",
-            style="Card.Muted.TLabel", wraplength=600,
+            style="Card.Muted.TLabel", wraplength=850,
         )
-        self.lbl_listado.grid(row=0, column=0, sticky="w")
+        self.lbl_listado.grid(row=1, column=0, sticky="w", pady=(4, 0))
+        self.lbl_archivo_articulos = ttk.Label(article_box, text="Todavía no hay un listado cargado.",
+            style="Card.Muted.TLabel", wraplength=850)
+        self.lbl_archivo_articulos.grid(row=2, column=0, sticky="w", pady=(4, 0))
         self.lbl_fecha_articulos = ttk.Label(article_box, text="", style="Card.Muted.TLabel")
-        self.lbl_fecha_articulos.grid(row=1, column=0, sticky="w", pady=(4, 0))
-        ttk.Button(article_box, text="Actualizar artículos", command=self._actualizar_listado_precios).grid(
-            row=0, column=1, rowspan=2, padx=(10, 0), sticky="e")
+        self.lbl_fecha_articulos.grid(row=3, column=0, sticky="w", pady=(4, 0))
+        article_controls = ttk.Frame(article_box, style="Card.TFrame")
+        article_controls.grid(row=4, column=0, sticky="w", pady=(8, 0))
+        ttk.Button(article_controls, text="Actualizar artículos", command=self._actualizar_listado_precios,
+            style="Primary.TButton").pack(side="left")
 
         price_box = ttk.Frame(f, style="Card.TFrame", padding=10)
         price_box.pack(fill="x", pady=(0, 6))
@@ -4780,7 +4786,9 @@ class TivendoWindow(ttk.Frame):
                     df_map, label_text = result
                     self.path_listado = Path(path)
                     self.df_map = df_map
-                    self.lbl_listado.config(text=label_text)
+                    status, _, filename = label_text.partition("\nArchivo:")
+                    self.lbl_listado.config(text=status, style="Card.Success.TLabel")
+                    self.lbl_archivo_articulos.config(text=f"Archivo:{filename}" if filename else f"Archivo: {Path(path).name}")
                     self.lbl_fecha_articulos.config(text=f"Última descarga de artículos: {article_download_label(path)}")
                     self._actualizar_estado_continuar()
                     # Si estábamos en Paso 2, igual queda listo para usar

@@ -78,3 +78,10 @@ La búsqueda local puede revisarse con datos de prueba. Las operaciones conectad
 ---
 
 Proyecto del catálogo de [Sebastian Araya — Sistemas, Logística y Automatización](https://github.com/FoorKeM).
+
+## Interfaz v144
+
+Artículos y Precios usan la misma distribución: título, estado, archivo, fecha y
+botón azul de actualización debajo. El archivo y la fecha del listado de artículos
+se muestran por separado para facilitar su lectura. Se conserva el funcionamiento
+de las descargas y de la exportación para Tivendo.
