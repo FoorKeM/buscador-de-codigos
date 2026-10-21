@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 """
@@ -102,7 +102,7 @@ _RE_CODE_TOKEN = re.compile(r"[a-z0-9-]{3,}")  # valida cada trozo de codigo (le
 
 STRIPE_COLOR = "#F3F6FA"
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v144"
+APP_VERSION  = "v145"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -621,18 +621,6 @@ def save_auto_articles_load(articulos: Path):
     pending.replace(AUTO_LAST_LOAD_PATH)
 
 
-def save_auto_prices_load(precios: Path):
-    """Guarda la fecha real de precios sin cambiar artículos ni packs."""
-    data = load_auto_last_load()
-    data.update(precios=str(Path(precios)),
-                precios_downloaded_at=datetime.now().isoformat(timespec="seconds"))
-    AUTO_LAST_LOAD_PATH.parent.mkdir(parents=True, exist_ok=True)
-    pending = AUTO_LAST_LOAD_PATH.with_suffix(".json.tmp")
-    with open(pending, "w", encoding="utf-8") as file:
-        json.dump(data, file, ensure_ascii=False, indent=2)
-    pending.replace(AUTO_LAST_LOAD_PATH)
-
-
 def _resource_download_label(key, path) -> str:
     data = load_auto_last_load()
     try:
@@ -647,10 +635,6 @@ def _resource_download_label(key, path) -> str:
 
 def article_download_label(path) -> str:
     return _resource_download_label("articulos", path)
-
-
-def price_download_label(path) -> str:
-    return _resource_download_label("precios", path)
 
 
 def format_auto_last_load_date(value: str) -> str:
@@ -1335,10 +1319,6 @@ async def auto_download_articulos_packs_y_precios(usuario: str, password: str, p
             except Exception:
                 pass
 
-async def auto_download_articulos_y_packs(usuario: str, password: str, progress_cb=None) -> dict:
-    result = await auto_download_articulos_packs_y_precios(usuario, password, progress_cb)
-    return {"articulos": result["articulos"], "packs": result["packs"]}
-
 
 async def auto_download_solo_articulos(usuario: str, password: str, progress_cb=None):
     """Valida la descarga antes de reemplazar solo el listado compartido."""
@@ -1379,45 +1359,6 @@ async def auto_download_solo_articulos(usuario: str, password: str, progress_cb=
                     await browser.close()
                 except Exception as exc:
                     _auto_log(f"No se pudo cerrar el navegador de descarga: {exc}")
-
-async def auto_download_solo_precios(usuario: str, password: str, progress_cb=None):
-    """Descarga y valida precios; publica una ruta nueva solo si el informe es válido."""
-    try:
-        from playwright.async_api import async_playwright
-    except ImportError as exc:
-        raise AutoDownloadError("Usa el ejecutable actualizado para descargar la lista de precios.") from exc
-
-    def progress(text):
-        _auto_log(text)
-        if progress_cb:
-            progress_cb(text)
-
-    APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="precios-", dir=APP_DATA_DIR) as staging:
-        async with async_playwright() as playwright:
-            progress("Iniciando sesión en Tivendo…")
-            browser, context, page = await _auto_new_page(playwright, Path(staging))
-            try:
-                await _auto_login_tivendo(page, usuario, password)
-                await _auto_ensure_mercado_house(page, usuario, password)
-                progress("Descargando la última lista de precios…")
-                source = await _auto_download_price_ranges(context, page, Path(staging))
-                progress("Comprobando los precios descargados…")
-                ranges_df, ranges_index = load_price_ranges_data(source)
-                if not any(record.get("precio1", "") for record in ranges_index.values()):
-                    raise AutoDownloadError("El informe descargado no contiene precios unitarios para comparar.")
-                AUTO_DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
-                stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                target = AUTO_DOWNLOAD_DIR / (f"lista_precios_{stamp}" + source.suffix.lower())
-                pending = target.with_suffix(target.suffix + ".part")
-                shutil.copy2(source, pending)
-                pending.replace(target)
-                return target, ranges_df, ranges_index
-            finally:
-                try:
-                    await browser.close()
-                except Exception as exc:
-                    _auto_log(f"No se pudo cerrar el navegador de precios: {exc}")
 
 
 # =====================================================
@@ -2159,7 +2100,7 @@ def _load_cached_side_data(path: Path, cache_path: Path, cache_meta: Path, loade
     resultado ya parseado en vez de volver a leer/parsear el Excel/HTML,
     que es lo lento. Reabrir la app sin haber descargado un archivo nuevo
     deberia sentirse instantaneo gracias a esto."""
-    schema_version = 2 if loader_fn is load_price_ranges_data else 1
+    schema_version = 3 if loader_fn is load_price_ranges_data else 1
     try:
         src_mtime = path.stat().st_mtime
     except Exception:
@@ -2296,22 +2237,30 @@ def _read_text_any_encoding(path: Path) -> str:
     return data.decode("latin-1", errors="replace")
 
 
-def _precio_unitario_informe(value) -> str:
-    """El informe de Tivendo usa coma de miles y punto decimal (ej. 1,290)."""
-    text = str(value).replace("$", "").replace("\xa0", "").strip()
-    if re.fullmatch(r"-?(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?", text):
-        return text.replace(",", "")
-    return ""
+def resumen_rango_venta(record) -> str:
+    """Señala el segundo rango informado, sin interpretar precios ni inventar datos."""
+    rango = str(record.get("rango2", "") or "").strip()
+    if not rango:
+        return "Sin información"
+    if re.fullmatch(r"\(?\s*0(?:\s*-\s*0)?\s*\)?", rango):
+        return "Sin rango adicional"
+    return f"Sí · {rango}"
 
 
-def precio_actual_catalogo(codigo, ranges_index, rango=1) -> str:
-    record = ranges_index.get(_norm_pack_code(codigo), {})
-    value = str(record.get(f"precio{rango}", "")).strip()
-    return value or "Sin dato"
+def rangos_guardados_para_revision(path):
+    """Lee solo el archivo local existente. No inicia ninguna descarga."""
+    if path is None or not Path(path).is_file():
+        return {}, "Rangos: sin archivo guardado; compruébalos en Tivendo."
+    path = Path(path)
+    try:
+        _, index = _load_cached_side_data(path, RANGES_CACHE_PATH, RANGES_CACHE_META, load_price_ranges_data)
+        return index, f"Rangos del archivo guardado: {path.name} · {_resource_download_label('precios', path)}"
+    except Exception:
+        return {}, "No se pudo leer el archivo de rangos guardado; compruébalos en Tivendo."
 
 
 def load_price_ranges_data(path: Path):
-    """Lee Lista de Precios HTML/.xls e indexa rangos y precios unitarios por artículo."""
+    """Lee la lista HTML/.xls e indexa los rangos de cantidades por artículo."""
     parser = _HTMLTableParser()
     parser.feed(_read_text_any_encoding(path))
 
@@ -2328,8 +2277,6 @@ def load_price_ranges_data(path: Path):
     code_idx = header.index("codigo articulo")
     r1_idx = header.index("rango 1")
     r2_idx = header.index("rango 2")
-    p1_idx = next((header.index(h) for h in ("precio unitario 1", "precio unitario1", "precio 1", "precio1") if h in header), None)
-    p2_idx = next((header.index(h) for h in ("precio unitario 2", "precio unitario2", "precio 2", "precio2") if h in header), None)
 
     rows = []
     ranges_index = {}
@@ -2342,9 +2289,7 @@ def load_price_ranges_data(path: Path):
         norm_code = _norm_pack_code(codigo)
         if not norm_code:
             continue
-        record = {"codigo": codigo, "rango1": rango1, "rango2": rango2,
-                  "precio1": _precio_unitario_informe(row[p1_idx]) if p1_idx is not None and p1_idx < len(row) else "",
-                  "precio2": _precio_unitario_informe(row[p2_idx]) if p2_idx is not None and p2_idx < len(row) else ""}
+        record = {"codigo": codigo, "rango1": rango1, "rango2": rango2}
         rows.append(record)
         ranges_index[norm_code] = record
 
@@ -3570,105 +3515,6 @@ class SearchView(ttk.Frame):
         except Exception as e:
             messagebox.showerror("Error", str(e))
 
-class ConvertView(ttk.Frame):
-    """Convertidor Tivendo -> Excel con progreso; escribe LISTA desde empresas.json.
-
-    LEGADO: esta clase no está conectada al menú principal (RootApp).
-    La funcionalidad equivalente es AutoBuildDBWindow + transform_export.
-    Se conserva por si se desea reactivar como vista independiente.
-    """
-    def __init__(self, master, go_home_cb, open_in_search_cb):
-        super().__init__(master)
-        self.master.title("Crear base de datos (Tivendo → Excel)")
-        self.pack(fill="both", expand=True, padx=16, pady=16)
-        self.go_home_cb = go_home_cb
-        self.open_in_search_cb = open_in_search_cb
-        self.selected_path: Optional[Path] = None
-        self.last_output: Optional[Path] = None
-
-        top = ttk.Frame(self); top.pack(fill="x")
-        ttk.Button(top, text="⟵ Volver al inicio", command=self._back_home).pack(side="left")
-        ttk.Label(top, text="Convertidor (BASE DE DATOS)").pack(side="left", padx=10)
-
-        ttk.Button(self, text="Seleccionar export de Tivendo", command=self.select_file).pack(pady=(16,8))
-        self.lbl_file = ttk.Label(self, text="Ningún archivo seleccionado", anchor="center"); self.lbl_file.pack(padx=12, fill="x")
-
-        self.btn_convert = ttk.Button(self, text="Convertir", command=self.convert_action, state="disabled")
-        self.btn_convert.pack(pady=(12,8))
-
-        frm = ttk.Frame(self); frm.pack(padx=20, pady=(8,4), fill="x")
-        self.progress = ttk.Progressbar(frm, mode="determinate", maximum=100); self.progress.pack(side="left", expand=True, fill="x")
-        self.lbl_pct = ttk.Label(frm, text="0%"); self.lbl_pct.pack(side="left", padx=(8,0))
-        self.status = ttk.Label(self, text="", anchor="center", foreground="#666"); self.status.pack(padx=12, fill="x")
-
-        self.btn_open_in_search = ttk.Button(self, text="Abrir archivo generado en el Buscador", command=self._open_in_search, state="disabled")
-        self.btn_open_in_search.pack(pady=(8,0))
-
-    def _back_home(self):
-        self.destroy(); self.go_home_cb()
-
-    def select_file(self):
-        fpath = filedialog.askopenfilename(
-            title="Selecciona la Base de Datos",
-            filetypes=[("Excel/CSV","*.xlsx *.xls *.xlsm *.csv"),("Todos","*.*")]
-        )
-        if not fpath: return
-        self.selected_path = Path(fpath)
-        self.lbl_file.config(text=self.selected_path.name)
-        self.btn_convert.config(state="normal")
-        self.status.config(text=""); self.btn_open_in_search.config(state="disabled")
-        self.last_output = None
-        try:
-            prefs = load_prefs(); prefs["last_dir"] = str(self.selected_path.parent); save_prefs(prefs)
-        except Exception:
-            pass
-
-    def set_progress(self, value: int, text: Optional[str] = None):
-        value = max(0, min(100, int(value)))
-        self.progress['value'] = value; self.lbl_pct.config(text=f"{value}%")
-        if text is not None: self.status.config(text=text)
-        self.update_idletasks()
-
-    def convert_action(self):
-        if not self.selected_path: return
-        out_file = filedialog.asksaveasfilename(
-            title="Guardar como", defaultextension=".xlsx",
-            initialfile="BASE_ACTUALIZADA.xlsx", filetypes=[("Excel","*.xlsx")]
-        )
-        if not out_file: return
-
-        self.btn_convert.config(state="disabled"); self.status.config(text="Preparando…"); self.set_progress(0, "Listo para convertir…")
-
-        def work():
-            try:
-                self.after(0, lambda: self.set_progress(5, "Detectando encabezados…"))
-                df = read_export_any(self.selected_path, progress_cb=lambda p,t: self.after(0, lambda: self.set_progress(p,t)))
-                out_df = transform_export(df, progress_cb=lambda p,t: self.after(0, lambda: self.set_progress(p,t)))
-                empresas = load_empresas(); lista_df = empresas_df_for_excel(empresas)
-                self.after(0, lambda: self.set_progress(85, "Escribiendo Excel…"))
-                with pd.ExcelWriter(out_file, engine="openpyxl") as writer:
-                    out_df.to_excel(writer, sheet_name="BASE DE DATOS", index=False)
-                    lista_df.to_excel(writer, sheet_name="LISTA", index=False)
-                self.last_output = Path(out_file)
-                self.after(0, lambda: self.on_done(True, f"Archivo generado:\n{out_file}"))
-            except Exception as e:
-                self.after(0, lambda: self.on_done(False, f"Ocurrió un error:\n{e}"))
-
-        threading.Thread(target=work, daemon=True).start()
-
-    def on_done(self, success: bool, msg: str):
-        self.set_progress(100 if success else 0, "Completado" if success else "Error")
-        self.btn_convert.config(state="normal")
-        if success:
-            messagebox.showinfo("Listo", msg); self.btn_open_in_search.config(state="normal")
-        else:
-            messagebox.showerror("Error", msg)
-
-    def _open_in_search(self):
-        if self.last_output and self.last_output.exists():
-            self.destroy(); self.open_in_search_cb(self.last_output)
-        else:
-            messagebox.showwarning("Atención", "No hay un archivo generado para abrir en el buscador.")
 
 # =====================================================
 #  App principal
@@ -3734,7 +3580,7 @@ class AutoBuildDBWindow(tk.Toplevel):
     def _start_work(self):
         def work():
             try:
-                # Reutilizamos la misma lógica que el ConvertView
+                # Aplicamos la conversión activa del listado de Tivendo
                 def cb(p, t):
                     self.after(0, lambda: self._set_progress(p, t or ""))
 
@@ -4082,89 +3928,6 @@ class RootApp(tk.Tk):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _actualizar_solo_precios(self, on_success, on_error, on_progress, automatico=False):
-        """Trabajo en segundo plano con avisos dentro del asistente, sin ventana modal."""
-        listeners = getattr(self, "_price_refresh_subscribers", None)
-        if listeners is not None:
-            listeners.append((on_success, on_error, on_progress))
-            on_progress("La lista de precios ya se está actualizando…")
-            return True
-        if getattr(self, "_auto_load_busy", False):
-            on_error("Hay otra descarga en curso. Espera a que termine y pulsa Actualizar lista de precios.")
-            return False
-        credential_error = ""
-        if automatico:
-            saved = load_auto_credentials()
-            credentials = (saved.get("usuario"), saved.get("password"))
-            if not all(credentials):
-                credential_error = "Configura el acceso a Tivendo con el botón Actualizar lista de precios."
-        else:
-            credentials = self._ask_auto_credentials()
-            if not credentials:
-                on_error("Actualización cancelada. Puedes volver a intentarlo con el botón Actualizar.")
-                return False
-            save_auto_credentials(*credentials)
-
-        self._auto_load_busy = True
-        self._price_refresh_subscribers = [(on_success, on_error, on_progress)]
-        saved_path = self.ranges_path
-
-        def notify_progress(text):
-            def notify():
-                for _, _, callback in list(self._price_refresh_subscribers or []):
-                    callback(text)
-            try:
-                self.after(0, notify)
-            except (RuntimeError, tk.TclError):
-                pass
-
-        def worker():
-            result = None
-            error = None
-            saved_result = None
-            try:
-                if saved_path and Path(saved_path).is_file():
-                    try:
-                        # Leer el formato nuevo también al usar archivos/cachés anteriores.
-                        saved_result = load_price_ranges_data(Path(saved_path))
-                    except Exception as exc:
-                        _auto_log(f"No se pudo leer la lista de precios guardada: {exc}")
-                if credential_error:
-                    raise AutoDownloadError(credential_error)
-                result = asyncio.run(auto_download_solo_precios(*credentials, progress_cb=notify_progress))
-                save_auto_prices_load(result[0])
-            except Exception as exc:
-                error = exc
-                _auto_log(f"Error al actualizar solo precios: {exc}")
-
-            def apply():
-                callbacks = self._price_refresh_subscribers or []
-                self._price_refresh_subscribers = None
-                self._auto_load_busy = False
-                if error is None:
-                    self.ranges_path, self.ranges_df, self.ranges_index = result
-                    if self.start_view is not None:
-                        self.start_view.set_ranges_cargado(True)
-                else:
-                    if saved_result is not None and self.ranges_path == saved_path:
-                        self.ranges_df, self.ranges_index = saved_result
-                    if isinstance(error, TivendoLoginError):
-                        save_auto_credentials(credentials[0], "")
-                for success, failure, _ in callbacks:
-                    try:
-                        if error is None:
-                            success(*result)
-                        else:
-                            failure(str(error).split("Call log:", 1)[0].strip())
-                    except Exception as exc:
-                        _auto_log(f"No se pudo mostrar el estado de precios: {exc}")
-            try:
-                self.after(0, apply)
-            except (RuntimeError, tk.TclError):
-                pass
-
-        threading.Thread(target=worker, daemon=True).start()
-        return True
 
     def _auto_load_articulos_packs(self):
         if getattr(self, "_auto_load_busy", False):
@@ -4546,9 +4309,10 @@ class TivendoWindow(ttk.Frame):
         self.df_view = None        # DataFrame filtrado (None = sin filtro)
         self._df_preview_norm = {} # columnas normalizadas para filtro rápido
         self._modo_ejemplo_precios = False
-        self._price_load_job = 0
-        self._precios_actualizando = False
-        self._precios_confirmados = False
+        self._listado_load_job = 0
+        self._listado_cargando = False
+        self._rangos_index = {}
+        self._rangos_fuente = "Rangos: sin archivo guardado; compruébalos en Tivendo."
 
         self.enable_r2 = tk.BooleanVar(value=False)
         self.export_only_valid = tk.BooleanVar(value=True)
@@ -4573,7 +4337,6 @@ class TivendoWindow(ttk.Frame):
                 self._start_async_listado_load(self.path_listado)
             except Exception:
                 pass
-        self.after_idle(self._actualizar_precios_al_entrar)
 
     def _build_stepA_select_listado(self):
         f = self.stepA = ttk.Frame(self, padding=16)
@@ -4609,27 +4372,8 @@ class TivendoWindow(ttk.Frame):
         ttk.Button(article_controls, text="Actualizar artículos", command=self._actualizar_listado_precios,
             style="Primary.TButton").pack(side="left")
 
-        price_box = ttk.Frame(f, style="Card.TFrame", padding=10)
-        price_box.pack(fill="x", pady=(0, 6))
-        price_box.columnconfigure(0, weight=1)
-        ttk.Label(price_box, text=f"Precios · {_auto_active_price_list_name()}", style="Card.Section.TLabel").grid(row=0, column=0, sticky="w")
-        self.lbl_estado_lista_precios = ttk.Label(price_box, text="Se actualizará automáticamente al entrar…",
-            style="Card.Muted.TLabel", wraplength=850)
-        self.lbl_estado_lista_precios.grid(row=1, column=0, sticky="w", pady=(4, 0))
-        self.lbl_archivo_lista_precios = ttk.Label(price_box, text="", style="Card.Muted.TLabel", wraplength=850)
-        self.lbl_archivo_lista_precios.grid(row=2, column=0, sticky="w", pady=(4, 0))
-        self.lbl_descarga_precios = ttk.Label(price_box, text="", style="Card.Muted.TLabel")
-        self.lbl_descarga_precios.grid(row=3, column=0, sticky="w", pady=(4, 0))
-        controls = ttk.Frame(price_box, style="Card.TFrame")
-        controls.grid(row=4, column=0, sticky="w", pady=(8, 0))
-        self.btn_actualizar_precios = ttk.Button(controls, text="Actualizar lista de precios",
-            command=self._actualizar_lista_precios, style="Primary.TButton")
-        self.btn_actualizar_precios.pack(side="left")
-        self.btn_usar_guardados = ttk.Button(controls, text="Usar lista guardada", command=self._usar_precios_guardados)
-        self.pb_precios = ttk.Progressbar(price_box, mode="indeterminate")
-        self.pb_precios.grid(row=5, column=0, sticky="ew", pady=(8, 0))
-        self.pb_precios.grid_remove()
-        self._mostrar_info_lista_precios()
+        ttk.Label(f, text="Usa el listado guardado. Actualiza artículos solo cuando lo necesites.",
+            style="Muted.TLabel").pack(anchor="w", pady=(4, 6))
 
         # Botón para pasar al siguiente paso (pegar los datos)
         self.btn_to_paste = ttk.Button(
@@ -4644,97 +4388,21 @@ class TivendoWindow(ttk.Frame):
     def _actualizar_listado_precios(self):
         self.master._actualizar_solo_articulos(lambda ruta, catalogo: self._start_async_listado_load(ruta))
 
-    def _actualizar_precios_al_entrar(self):
-        if self.winfo_exists():
-            self._actualizar_lista_precios(automatico=True)
-
-    def _mostrar_info_lista_precios(self):
-        path = getattr(self.master, "ranges_path", None)
-        if path and Path(path).is_file():
-            self.lbl_archivo_lista_precios.config(text=f"Archivo: {Path(path).name}")
-            self.lbl_descarga_precios.config(text=f"Última descarga de precios: {price_download_label(path)}")
-        else:
-            self.lbl_archivo_lista_precios.config(text="Todavía no hay una lista de precios guardada.")
-            self.lbl_descarga_precios.config(text="Última descarga de precios: sin registro")
 
     def _actualizar_estado_continuar(self):
-        ready = self.df_map is not None and not self._precios_actualizando and self._precios_confirmados
+        ready = self.df_map is not None and not self._listado_cargando
         self.btn_to_paste.config(state="normal" if ready else "disabled")
         if hasattr(self, "btn_revisar_precios"):
             self._actualizar_pegado_precios()
 
-    def _actualizar_lista_precios(self, automatico=False):
-        if not self.winfo_exists() or self._precios_actualizando:
-            return
-        self._precios_actualizando = True
-        self._precios_confirmados = False
-        self.btn_actualizar_precios.config(state="disabled")
-        self.btn_usar_guardados.pack_forget()
-        self.pb_precios.grid()
-        self.pb_precios.start(10)
-        self._actualizar_estado_continuar()
-        self._progreso_lista_precios("Buscando la última lista de precios en Tivendo…")
-        self.master._actualizar_solo_precios(self._lista_precios_actualizada, self._error_lista_precios,
-            self._progreso_lista_precios, automatico=automatico)
-
-    def _progreso_lista_precios(self, text):
-        if self.winfo_exists():
-            self.lbl_estado_lista_precios.config(text=text, style="Card.Muted.TLabel")
-
-    def _terminar_actualizacion_precios(self):
-        self._precios_actualizando = False
-        self.pb_precios.stop()
-        self.pb_precios.grid_remove()
-        self.btn_actualizar_precios.config(state="normal")
-        self._mostrar_info_lista_precios()
-
-    def _lista_precios_actualizada(self, path, ranges_df, ranges_index):
-        if not self.winfo_exists():
-            return
-        self._terminar_actualizacion_precios()
-        self._precios_confirmados = True
-        self.lbl_estado_lista_precios.config(text=f"Lista actualizada · {len(ranges_index):,} artículos con precios",
-            style="Card.Success.TLabel")
-        self._actualizar_comparacion_precios()
-        self._actualizar_estado_continuar()
-
-    def _error_lista_precios(self, error):
-        if not self.winfo_exists():
-            return
-        self._terminar_actualizacion_precios()
-        self._precios_confirmados = False
-        detail = str(error)
-        detail = detail[:240] + "…" if len(detail) > 240 else detail
-        self.lbl_estado_lista_precios.config(text=f"No se actualizó: {detail}", style="Card.Warning.TLabel")
-        saved = getattr(self.master, "ranges_path", None)
-        self.btn_usar_guardados.config(text="Usar lista guardada" if saved and Path(saved).is_file()
-                                      else "Continuar sin actualizar precios")
-        self.btn_usar_guardados.pack(side="left", padx=(8, 0))
-        self._actualizar_estado_continuar()
-
-    def _usar_precios_guardados(self):
-        if self._precios_actualizando:
-            return
-        self._precios_confirmados = True
-        self.btn_usar_guardados.pack_forget()
-        saved = getattr(self.master, "ranges_path", None)
-        self.lbl_estado_lista_precios.config(text="Usando la lista guardada; revisa su fecha de descarga." if saved and Path(saved).is_file()
-            else "Continuando sin verificar los precios actuales en Tivendo.", style="Card.Warning.TLabel")
-        self._actualizar_comparacion_precios()
-        self._actualizar_estado_continuar()
-
-    def _actualizar_comparacion_precios(self):
-        # Solo cambia las columnas informativas: conserva los precios nuevos pegados o editados.
-        index = getattr(self.master, "ranges_index", None) or {}
-        for row in self.tree.get_children():
-            code = self.tree.set(row, "Código")
-            self.tree.set(row, "PrecioActual1", precio_actual_catalogo(code, index))
-            self.tree.set(row, "PrecioActual2", precio_actual_catalogo(code, index, rango=2))
 
     def _start_async_listado_load(self, path: Path):
         """Carga el listado en un hilo para no congelar la apertura de la ventana."""
-        self._price_load_job += 1
-        job = self._price_load_job
+        self._listado_load_job += 1
+        job = self._listado_load_job
+        self._listado_cargando = True
+        self._actualizar_estado_continuar()
+        ranges_path = getattr(self.master, "ranges_path", None)
         # UI: mostrar estado cargando + progressbar si existe
         try:
             self.lbl_listado.config(text=f"Cargando listado: {path.name} ...")
@@ -4759,6 +4427,7 @@ class TivendoWindow(ttk.Frame):
         def worker():
             err = None
             result = None
+            ranges_index, ranges_label = rangos_guardados_para_revision(ranges_path)
             try:
                 result = self._parse_listado_for_map(path)
             except Exception as e:
@@ -4766,7 +4435,7 @@ class TivendoWindow(ttk.Frame):
 
             def apply():
                 # detener progress
-                if not self.winfo_exists() or job != self._price_load_job:
+                if not self.winfo_exists() or job != self._listado_load_job:
                     return
                 try:
                     if hasattr(self, "_pb_listado"):
@@ -4775,7 +4444,9 @@ class TivendoWindow(ttk.Frame):
                 except Exception:
                     pass
 
+                self._listado_cargando = False
                 if err:
+                    self._actualizar_estado_continuar()
                     try:
                         messagebox.showerror("Error", f"No se pudo cargar el listado.\n{err}")
                     except Exception:
@@ -4786,6 +4457,8 @@ class TivendoWindow(ttk.Frame):
                     df_map, label_text = result
                     self.path_listado = Path(path)
                     self.df_map = df_map
+                    self._rangos_index, self._rangos_fuente = ranges_index, ranges_label
+                    self.lbl_rangos_fuente.config(text=ranges_label)
                     status, _, filename = label_text.partition("\nArchivo:")
                     self.lbl_listado.config(text=status, style="Card.Success.TLabel")
                     self.lbl_archivo_articulos.config(text=f"Archivo:{filename}" if filename else f"Archivo: {Path(path).name}")
@@ -4912,7 +4585,7 @@ class TivendoWindow(ttk.Frame):
         text += f"{count} producto(s) · " + ("Listo para comprobar en el listado." if valid else first_error or "Cada fila necesita una barra y un precio válido.")
         self.lbl_pegado_precios.config(text=text, style="Success.TLabel" if valid else "Muted.TLabel" if not count else "Warning.TLabel")
         self.btn_revisar_precios.config(state="normal" if valid and self.df_map is not None
-            and self._precios_confirmados and not self._precios_actualizando else "disabled")
+            and not self._listado_cargando else "disabled")
         return valid
 
     def _limpiar_pegado_precios(self):
@@ -4989,9 +4662,13 @@ class TivendoWindow(ttk.Frame):
         f = self.stepC = ttk.Frame(self, padding=16)
         _wizard_steps(f, 3, ("Listado", "Pegar precios", "Revisar y exportar"))
         ttk.Label(f, text="Revisa los artículos y genera el archivo", style="Section.TLabel").pack(anchor="w")
-        ttk.Label(f, text="Compara el precio actual (rango 1) con el nuevo. «Sin dato» indica que no figura en la lista.\n"
+        ttk.Label(f, text="Comprueba el artículo y el precio nuevo que ingresaste.\n"
                   "Las filas rojas no están en el listado de artículos. Guarda el Excel e impórtalo en Tivendo.",
                   style="Muted.TLabel").pack(anchor="w", pady=(3, 0))
+
+        self.lbl_rangos_fuente = ttk.Label(f, text=self._rangos_fuente,
+            style="Muted.TLabel", wraplength=1000)
+        self.lbl_rangos_fuente.pack(anchor="w", pady=(4, 0))
 
         # ---- Filtro rápido
         filter_bar = ttk.Frame(f); filter_bar.pack(fill="x", pady=(4,6))
@@ -5021,11 +4698,11 @@ class TivendoWindow(ttk.Frame):
         body = ttk.Frame(f); body.pack(fill="both", expand=True, pady=(8,0))
 
         cols = ("Código","Nombre","CodigoBarraInterno","Precio1","RangoInicial1","RangoFinal1",
-                "Precio2","RangoInicial2","RangoFinal2","PrecioActual1","PrecioActual2")
+                "Precio2","RangoInicial2","RangoFinal2","RangoExistente")
         self.columns = cols
         self.tree = ttk.Treeview(body, columns=cols, show="headings", height=22, selectmode="extended")
-        widths = (100, 265, 150, 100, 90, 90, 100, 90, 90, 110, 125)
-        headings = ("Código", "Artículo", "Barra interna", "Precio nuevo", "Desde", "Hasta", "Precio 2", "Desde 2", "Hasta 2", "Precio actual", "Precio actual 2")
+        widths = (100, 265, 150, 100, 90, 90, 100, 90, 90, 195)
+        headings = ("Código", "Artículo", "Barra interna", "Precio nuevo", "Desde", "Hasta", "Precio 2", "Desde 2", "Hasta 2", "¿Tiene otro rango?")
         for c,w in zip(cols, widths):
             self.tree.heading(c, text=headings[cols.index(c)])
             self.tree.column(c, width=w, minwidth=180 if c == "Nombre" else 80, stretch=c == "Nombre", anchor="w")
@@ -5125,11 +4802,11 @@ class TivendoWindow(ttk.Frame):
             self.side_shell_rangos.pack(side="right", fill="y", before=self.preview_vsb)
         else:
             self.side_shell_rangos.pack_forget()
-        columns = ["Código", "Nombre", "CodigoBarraInterno", "PrecioActual1", "Precio1"]
+        columns = ["Código", "Nombre", "CodigoBarraInterno", "RangoExistente", "Precio1"]
         if self.var_opciones_rangos.get():
             columns += ["RangoInicial1", "RangoFinal1"]
             if self.enable_r2.get():
-                columns += ["PrecioActual2", "Precio2", "RangoInicial2", "RangoFinal2"]
+                columns += ["Precio2", "RangoInicial2", "RangoFinal2"]
         self.tree.configure(displaycolumns=columns)
 
     def _refocus_filter(self):
@@ -5169,7 +4846,6 @@ class TivendoWindow(ttk.Frame):
         p2s   = _col("Precio2")
         ri2s  = _col("RangoInicial2")
         rf2s  = _col("RangoFinal2")
-        price_index = getattr(self.master, "ranges_index", None) or {}
 
         ins = self.tree.insert
         no_count = 0
@@ -5180,9 +4856,8 @@ class TivendoWindow(ttk.Frame):
             else:
                 tag = "nofound"
                 no_count += 1
-            current1 = precio_actual_catalogo(ident, price_index)
-            current2 = precio_actual_catalogo(ident, price_index, rango=2)
-            ins("", "end", values=(ident, nom, cbi, p1, ri1, rf1, p2, ri2, rf2, current1, current2), tags=(tag,))
+            rango = resumen_rango_venta(self._rangos_index.get(_norm_pack_code(ident), {}))
+            ins("", "end", values=(ident, nom, cbi, p1, ri1, rf1, p2, ri2, rf2, rango), tags=(tag,))
 
         total = len(df)
         self.lbl_info.config(text=("PRÁCTICA · No se exporta" if self._modo_ejemplo_precios else

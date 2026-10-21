@@ -57,16 +57,16 @@ Las versiones distribuidas se conservan en [Releases](https://github.com/FoorKeM
 4. Copiar los códigos de barras o exportar los resultados.
 5. Para cambios de precios o altas masivas, utilizar el módulo correspondiente y revisar la vista previa antes de generar el archivo de importación.
 
-En **Cambios masivos de precios**, al entrar se descarga la lista de precios configurada en Tivendo si el acceso está guardado. El primer paso muestra la fecha de descarga y permite volver a actualizarla con **Actualizar lista de precios**. Si falla, se puede reintentar o elegir expresamente continuar con la lista guardada.
+En **Cambios masivos de precios** se usa el listado de artículos guardado para identificar los códigos. **Actualizar artículos** descarga una copia nueva únicamente cuando se pulsa el botón; entrar al módulo no solicita descargas.
 
-La vista previa muestra **Precio actual → Precio nuevo**; el actual corresponde al rango 1 de la lista descargada y no se puede editar. Las opciones de rangos también permiten comparar el rango 2. Cuando no hay un precio disponible se indica **Sin dato**. El Excel para Tivendo conserva sus columnas originales y exporta los precios nuevos.
+La revisión muestra el artículo y el precio nuevo que ingresó la persona. Los rangos opcionales permiten preparar las cantidades y el segundo precio de la importación. No se consulta ni compara un precio actual del catálogo. El Excel para Tivendo conserva sus siete columnas y exporta solo los datos preparados.
 
 ## Comprobación y límites
 
-Las pruebas de numeración de artículos, actualización de precios y formato de exportación se pueden ejecutar sin abrir ventanas, sin navegador y sin conectarse a Tivendo:
+Las pruebas de numeración de artículos, actualización manual y formato de exportación se pueden ejecutar sin abrir ventanas, sin navegador y sin conectarse a Tivendo:
 
 ```powershell
-python -m unittest -v tools.test_price_refresh tools.test_bulk_workflows.SecuenciaTests tools.test_bulk_workflows.DescargaTests
+python -m unittest -v tools.test_price_changes tools.test_bulk_workflows.SecuenciaTests tools.test_bulk_workflows.DescargaTests
 ```
 
 `tools.test_bulk_workflows.InterfazTests` incluye pruebas de interfaz que abren ventanas; se ejecutan solo cuando se desea hacer una revisión visual. Una comprobación manual debe cubrir códigos conocidos, códigos inexistentes, consultas por lotes, filtros y exportación, utilizando un catálogo de prueba.
@@ -85,3 +85,20 @@ Artículos y Precios usan la misma distribución: título, estado, archivo, fech
 botón azul de actualización debajo. El archivo y la fecha del listado de artículos
 se muestran por separado para facilitar su lectura. Se conserva el funcionamiento
 de las descargas y de la exportación para Tivendo.
+
+
+## Limpieza v145
+
+Retiradas la descarga exclusiva de precios al entrar, su tarjeta, comparación,
+columnas y estados de confirmación, junto con los ayudantes que dejaron de usarse.
+El lector compartido conserva los rangos de cantidades del buscador; su caché se
+renueva al leer el formato reducido. También se retiró `ConvertView`, una vista
+antigua sin accesos desde el menú: la conversión activa continúa en
+`AutoBuildDBWindow` y `transform_export`.
+
+
+La vista previa incluye **¿Tiene otro rango?**, con las cantidades del segundo
+rango del archivo guardado. Distingue **Sin rango adicional** de **Sin información**
+y muestra el archivo y su fecha como referencia. Leer ese archivo es local: no
+descarga nada al entrar ni rellena precios existentes. Esta columna es informativa
+y no se incluye en el Excel de importación.

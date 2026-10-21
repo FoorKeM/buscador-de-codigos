@@ -149,4 +149,4 @@ if __name__ == "__main__":
 - Do not read the entire source file on every session — this AGENTS.md is the reference.
 - Do not create a new `buscador_codigos_vNN.py` file for each change. Keep active development in `buscador_codigos.py`; publish stable snapshots through GitHub tags/releases.
 - Do not flatten the cache structure; both `.pkl` and `_meta.json` must stay in sync.
-- `ConvertView` is a legacy class still in the file but not wired to any menu button — ignore it unless specifically asked.
+- The unused legacy `ConvertView` was removed in v145. Active conversion remains in `AutoBuildDBWindow` and `transform_export`.
