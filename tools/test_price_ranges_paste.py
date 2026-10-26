@@ -302,21 +302,6 @@ class PriceRangePasteTests(unittest.TestCase):
             for index in range(7):
                 self.assertEqual(view._area_columnas_precios.options[('column',index)]['weight'], 0)
 
-    def test_alto_crece_con_productos_y_se_limita_al_espacio_disponible(self):
-        self.assertEqual(app.filas_visibles_pegado(0), 3)
-        self.assertEqual(app.filas_visibles_pegado(5), 6)
-        self.assertEqual(app.filas_visibles_pegado(10), 11)
-        self.assertEqual(app.filas_visibles_pegado(100, 400, 20), 16)
-        self.assertLess(app.filas_visibles_pegado(100, 250, 20), app.filas_visibles_pegado(100, 400, 20))
-        view = paste_view([])
-        self.assertEqual(view.txt_cod.options['height'], 3)
-        view.clipboard_get = lambda: '\n'.join(f'00{i}' for i in range(10))
-        view._pegar_columna_precio(0)
-        self.assertEqual(view.txt_cod.options['height'], 11)
-        self.assertEqual(view.txt_prec.options['height'], 11)
-        self.assertEqual(view.txt_ri1.options['height'], 11)
-        view._limpiar_pegado_precios()
-        self.assertEqual(view.txt_cod.options['height'], 3)
 
 
 if __name__ == '__main__':

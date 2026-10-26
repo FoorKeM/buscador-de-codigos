@@ -103,7 +103,7 @@ _RE_CODE_TOKEN = re.compile(r"[a-z0-9-]{3,}")  # valida cada trozo de codigo (le
 
 STRIPE_COLOR = "#F3F6FA"
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v150"
+APP_VERSION  = "v151"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -4288,12 +4288,6 @@ def clean_price(s: str) -> str:
     return s
 
 
-def filas_visibles_pegado(productos, espacio=400, alto_linea=20):
-    """Empieza pequeño, crece por filas y reserva espacio para títulos/scroll."""
-    capacity = max(3, int((max(0, espacio) - 65) // max(1, alto_linea)))
-    return min(max(3, productos + 1), capacity)
-
-
 def normalizar_cantidad_rango(texto):
     """Una cantidad por campo, con coma o punto decimal, sin separador de miles."""
     text = str(texto).strip()
@@ -4601,32 +4595,28 @@ class TivendoWindow(ttk.Frame):
         self.lbl_pegado_precios.pack(anchor="w", pady=(0, 6))
 
         area = ttk.Frame(f)
-        area.pack(anchor="nw")
+        area.pack(fill="y", expand=True, anchor="n")
+        area.rowconfigure(0, weight=1)
         self._area_columnas_precios = area
         self._campos_columnas_precios = []
         self._sincronizando_columnas_precios = False
-        fields = (("txt_cod", "Barras internas", 18), ("txt_ri1", "Rango inicial 1", 6),
-                  ("txt_rf1", "Rango final 1", 6), ("txt_prec", "Precios 1", 10),
-                  ("txt_ri2", "Rango inicial 2", 6), ("txt_rf2", "Rango final 2", 6),
-                  ("txt_prec2", "Precios 2", 10))
+        fields = (("txt_cod", "Barras internas", 24), ("txt_ri1", "Rango inicial 1", 8),
+                  ("txt_rf1", "Rango final 1", 8), ("txt_prec", "Precios 1", 14),
+                  ("txt_ri2", "Rango inicial 2", 8), ("txt_rf2", "Rango final 2", 8),
+                  ("txt_prec2", "Precios 2", 14))
         for index, (attribute, title, width) in enumerate(fields):
             shell = ttk.Frame(area)
             shell.grid(row=0, column=index, sticky="nsew", padx=(0, 6))
             shell.rowconfigure(1, weight=1)
             shell.rowconfigure(0, minsize=36)
             shell.columnconfigure(0, weight=1)
-            ttk.Label(shell, text=title, style="Muted.TLabel", wraplength=72 if width == 6 else 140 if index == 0 else 90).grid(row=0, column=0, sticky="sw")
-            text = tk.Text(shell, wrap="none", width=width, height=3, undo=True,
+            ttk.Label(shell, text=title, style="Muted.TLabel", wraplength=86 if width == 8 else 180 if index == 0 else 120).grid(row=0, column=0, sticky="sw")
+            text = tk.Text(shell, wrap="none", width=width, height=12, undo=True,
                            font=("Segoe UI", 10), background=UI["surface"], foreground=UI["ink"],
                            insertbackground=UI["ink"], selectbackground=UI["selected"],
                            relief="flat", borderwidth=0, highlightthickness=1,
                            highlightbackground=UI["border"], highlightcolor=UI["primary"], padx=5, pady=5)
             text.grid(row=1, column=0, sticky="nsew")
-            shell.rowconfigure(2, minsize=17)
-            if index in (0, 3, 6):
-                horizontal = ttk.Scrollbar(shell, orient="horizontal", command=text.xview)
-                horizontal.grid(row=2, column=0, sticky="ew")
-                text.configure(xscrollcommand=horizontal.set)
             text.configure(yscrollcommand=lambda first, last, i=index: self._al_desplazar_columna_precio(i, first, last))
             text.bind("<<Modified>>", self._al_editar_precios)
             text.bind("<Control-v>", lambda event, i=index: self._pegar_columna_precio(i))
@@ -4637,11 +4627,10 @@ class TivendoWindow(ttk.Frame):
             setattr(self, attribute, text)
             self._campos_columnas_precios.append(shell)
         self._scroll_columnas_precios = ttk.Scrollbar(area, orient="vertical", command=self._desplazar_columnas_precios)
-        self._scroll_columnas_precios.grid(row=0, column=7, sticky="ns", pady=(36, 17))
+        self._scroll_columnas_precios.grid(row=0, column=7, sticky="ns", pady=(36, 0))
         ttk.Label(f, text="Ctrl+V reemplaza solo la columna elegida. Las cantidades admiten hasta 1000.",
                   style="Muted.TLabel").pack(anchor="w", pady=(6, 0))
         bottom = ttk.Frame(f)
-        self._pie_pegado_precios = bottom
         bottom.pack(fill="x", pady=(10, 0))
         ttk.Button(bottom, text="← Volver", command=lambda: self._show(self.stepA)).pack(side="left")
         ttk.Button(bottom, text="Limpiar columnas", command=self._limpiar_pegado_precios).pack(side="left", padx=6)
@@ -4651,9 +4640,7 @@ class TivendoWindow(ttk.Frame):
         area.pack_forget()
         bottom.pack_forget()
         bottom.pack(side="bottom", fill="x", pady=(10, 0))
-        area.pack(anchor="nw")
-        self._alto_linea_pegado = tkfont.Font(font=self.txt_cod.cget("font")).metrics("linespace")
-        f.bind("<Configure>", lambda _event: self._ajustar_altura_columnas_precios())
+        area.pack(fill="y", expand=True, anchor="n")
         self._configurar_columnas_pegado()
 
     def _textos_precios(self):
@@ -4671,23 +4658,11 @@ class TivendoWindow(ttk.Frame):
                 shell.grid()
             else:
                 shell.grid_remove()
-            # Ninguna columna se ensancha con la ventana; solo crece el alto por productos.
+            # El bloque mantiene un ancho moderado y centrado; el alto usa el espacio disponible.
             self._area_columnas_precios.columnconfigure(index, weight=0)
         self.btn_segundo_rango.config(text="− Quitar segundo rango" if self.enable_r2.get() else "+ Segundo rango y precio")
         self.btn_pegar_precios.config(text=f"Pegar tabla de {len(active)} columnas")
         self._actualizar_pegado_precios()
-
-    def _ajustar_altura_columnas_precios(self, productos=None):
-        if productos is None:
-            productos = max((len(widget.get("1.0", "end-1c").splitlines())
-                             for widget in self._textos_precios()), default=0)
-        available = 400
-        if hasattr(self, "_pie_pegado_precios") and self.stepB.winfo_height() > 200:
-            available = (self.stepB.winfo_height() - self._area_columnas_precios.winfo_y()
-                         - self._pie_pegado_precios.winfo_reqheight() - 32)
-        lines = filas_visibles_pegado(productos, available, getattr(self, "_alto_linea_pegado", 20))
-        for widget in self._textos_precios():
-            widget.configure(height=lines)
 
     def _desplazar_columnas_precios(self, *args):
         self._sincronizando_columnas_precios = True
@@ -4812,7 +4787,6 @@ class TivendoWindow(ttk.Frame):
                 if not first_error:
                     first_error = f"Fila {line}: {detail}."
         count = len(rows)
-        self._ajustar_altura_columnas_precios(height)
         text = ("PRÁCTICA · " if self._modo_ejemplo_precios else "")
         text += f"{count} producto(s) · " + ("Listo para comprobar en el listado." if valid else first_error or "Completa una barra, su rango y su precio por fila.")
         self.lbl_pegado_precios.config(text=text, style="Success.TLabel" if valid else "Muted.TLabel" if not count else "Warning.TLabel")
