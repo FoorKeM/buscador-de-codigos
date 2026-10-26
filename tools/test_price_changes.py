@@ -21,6 +21,17 @@ class Widget:
     def pack_forget(self):pass
     def start(self,*a):pass
     def stop(self):pass
+class Var:
+    def __init__(self, value): self.value=value
+    def get(self): return self.value
+    def set(self, value): self.value=value
+class Text:
+    def __init__(self, text=''): self.text=text; self.errors=[]
+    def get(self,*a): return self.text
+    def delete(self,*a): self.text=''
+    def insert(self,index,text): self.text=text
+    def tag_remove(self,*a): self.errors=[]
+    def tag_add(self,*a): self.errors.append(a)
 class Tree(Widget):
     def __init__(self):super().__init__();self.rows={}
     def get_children(self):return tuple(self.rows)
@@ -44,11 +55,16 @@ def fixture():
     view._rangos_fuente='Archivo de prueba'
     view._listado_load_job=0
     view._modo_ejemplo_precios=False
+    view.ingresar_rangos=Var(False)
+    view.enable_r2=Var(False)
+    for name in ('txt_cod','txt_rango1','txt_prec','txt_rango2','txt_prec2'):
+        setattr(view,name,Text())
+    view._toggle_opciones_rangos=mock.Mock()
     view.columns=COLS
     view.tree=Tree()
     view._pb_listado=Widget()
     view._update_validator_counts=mock.Mock()
-    for name in ('btn_to_paste','lbl_listado','lbl_archivo_articulos','lbl_fecha_articulos','lbl_info','btn_exportar_precios','lbl_rangos_fuente'):
+    for name in ('btn_to_paste','lbl_listado','lbl_archivo_articulos','lbl_fecha_articulos','lbl_info','btn_exportar_precios','lbl_rangos_fuente','lbl_pegado_precios','btn_revisar_precios'):
         setattr(view,name,Widget())
     view.winfo_exists=lambda:True
     view.after=lambda delay,callback:callback()
@@ -105,8 +121,8 @@ class PriceChangesTests(unittest.TestCase):
 
     def test_busca_el_articulo_y_exporta_solo_los_precios_nuevos(self):
         view=fixture()
-        view._actualizar_pegado_precios=lambda:True
-        view._read_pasted_lists=lambda:(['00123','99999'],['1990','2990'])
+        view.txt_cod.text='00123\n99999'
+        view.txt_prec.text='1990\n2990'
         view._build_preview_from_paste()
         self.assertEqual(len(view.tree.rows),2)
         self.assertEqual(view.tree.rows['0']['Código'],'A022766')

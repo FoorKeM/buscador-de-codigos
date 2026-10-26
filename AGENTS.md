@@ -94,7 +94,7 @@ Progress dialog. Runs `transform_export(path, progress_cb)` in a background thre
 
 ### TivendoWindow (Toplevel) — 3-step wizard
 - **Step A**: select listado, loads async in thread
-- **Step B**: paste barcodes + new prices (two text areas)
+- **Step B**: paste Barcode, Range 1, Price 1; a shared toggle reveals Range 2 and Price 2 together. Accepts 2, 3 or 5 Excel columns. Range text uses `1 - 2` or `0,001 - 9999`.
 - **Step C**: preview treeview with editable Precio column, range assignment, Excel export for Tivendo import
 - Uses pre-computed `_df_preview_norm` dict for O(1) row filtering
 
