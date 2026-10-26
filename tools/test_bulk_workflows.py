@@ -281,7 +281,7 @@ class InterfazTests(unittest.TestCase):
         for size in ("1120x720", "960x620"):
             self.root.geometry(size + "+15000+15000")
             for step, controls in ((view.stepA, (view.btn_to_paste,)),
-                                   (view.stepB, (view.txt_cod, view.txt_prec, view.btn_revisar_precios)),
+                                   (view.stepB, (view._editor_precios_entries[0], view._editor_precios_entries[3], view.tabla_pegado_precios, view.btn_revisar_precios)),
                                    (view.stepC, (view.tree, view.btn_exportar_precios))):
                 view._show(step)
                 for control in controls:

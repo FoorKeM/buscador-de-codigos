@@ -94,7 +94,7 @@ Progress dialog. Runs `transform_export(path, progress_cb)` in a background thre
 
 ### TivendoWindow (Toplevel) — 3-step wizard
 - **Step A**: select listado, loads async in thread
-- **Step B**: Barcode plus separate Initial 1, Final 1, Price 1 fields, grouped like Tivendo. A shared toggle reveals the second block (Initial 2, Final 2, Price 2). Accepts 2, 4 or 7 Excel columns. Quantities accept comma/dot decimals; no combined range strings.
+- **Step B**: compact single-row editor with barcode, Initial 1, Final 1, Price 1, and an optional second range/price. Short quantity inputs accept positive comma/dot decimals up to 1000. One shared table holds the batch; double-click edits a row. Accepts 2, 4 or 7 Excel columns; defaults to 1–1000 without custom ranges.
 - **Step C**: preview treeview with editable Precio column, range assignment, Excel export for Tivendo import
 - Uses pre-computed `_df_preview_norm` dict for O(1) row filtering
 

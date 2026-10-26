@@ -17,13 +17,16 @@ class Widget:
     def __init__(self):self.options={}; self.master=mock.Mock(); self.visible=True
     def config(self,**kw):self.options.update(kw)
     configure=config
-    def pack(self,**kw):pass
-    def pack_forget(self):pass
+    def pack(self,**kw):self.visible=True
+    def pack_forget(self):self.visible=False
     def start(self,*a):pass
     def stop(self):pass
     def grid(self,**kw):self.visible=True
     def grid_remove(self):self.visible=False
     def columnconfigure(self,*a,**kw):pass
+    def place(self,**kw):self.visible=True
+    def place_forget(self):self.visible=False
+    def focus_set(self):pass
 class Var:
     def __init__(self, value): self.value=value
     def get(self): return self.value
@@ -60,8 +63,8 @@ def fixture():
     view._modo_ejemplo_precios=False
     view.ingresar_rangos=Var(False)
     view.enable_r2=Var(False)
-    for name in ('txt_cod','txt_ri1','txt_rf1','txt_prec','txt_ri2','txt_rf2','txt_prec2'):
-        setattr(view,name,Text())
+    view._filas_pegado_precios=[]
+    view._fila_editor_precios=None
     view._toggle_opciones_rangos=mock.Mock()
     view.columns=COLS
     view.tree=Tree()
@@ -124,8 +127,7 @@ class PriceChangesTests(unittest.TestCase):
 
     def test_busca_el_articulo_y_exporta_solo_los_precios_nuevos(self):
         view=fixture()
-        view.txt_cod.text='00123\n99999'
-        view.txt_prec.text='1990\n2990'
+        view._filas_pegado_precios=[['00123','','','1990','','',''], ['99999','','','2990','','','']]
         view._build_preview_from_paste()
         self.assertEqual(len(view.tree.rows),2)
         self.assertEqual(view.tree.rows['0']['Código'],'A022766')
