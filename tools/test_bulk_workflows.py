@@ -257,11 +257,11 @@ class InterfazTests(unittest.TestCase):
         view.df_map = app.pd.DataFrame({"Identificador": ["A022765", "A022766"],
                                       "CodigoBarraInterno": ["001", "002"], "Nombre": ["QUESO", "PALMERITAS"]})
         view._actualizar_estado_continuar()
-        view._escribir_tabla_precios([["001", "1290"], ["", "1990"], ["002", "2990"]])
+        view._cargar_filas_precios([["001", "1290"], ["", "1990"], ["002", "2990"]])
         self.assertFalse(view._actualizar_pegado_precios())
         self.assertIn("Fila 2", view.lbl_pegado_precios.cget("text"))
         self.assertEqual(view._read_pasted_lists()[0], ["001", "", "002"])
-        view._escribir_tabla_precios([["001", "1290"], ["002", "2990"]])
+        view._cargar_filas_precios([["001", "1290"], ["002", "2990"]])
         view._build_preview_from_paste()
         compact = ("Código", "Nombre", "CodigoBarraInterno", "RangoInicial1", "RangoFinal1", "Precio1", "RangoExistente")
         self.assertEqual(tuple(view.tree["displaycolumns"]), compact)

@@ -103,7 +103,7 @@ _RE_CODE_TOKEN = re.compile(r"[a-z0-9-]{3,}")  # valida cada trozo de codigo (le
 
 STRIPE_COLOR = "#F3F6FA"
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v151"
+APP_VERSION  = "v152"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -4338,21 +4338,6 @@ def preparar_fila_precio(values, con_rangos=True, con_rango2=False):
     return result, errors
 
 
-def parsear_tabla_precios(texto):
-    """Barra, inicial/final/precio de cada rango; admite 2, 4 o 7 columnas."""
-    rows = list(csv.reader(io.StringIO(texto), delimiter="\t"))
-    rows = [row for row in rows if any(cell.strip() for cell in row)]
-    headers = {"barra", "barra interna", "codigo", "codigo barra interno", "codigo de barra interno", "codigo de barras", "codigobarrainterno"}
-    if rows and _normalize_text(rows[0][0]) in headers:
-        rows.pop(0)
-    if not rows:
-        raise ValueError("Copia primero las filas de Excel que quieres pegar.")
-    width = max(map(len, rows))
-    if width not in (2, 4, 7) or any("\n" in cell or "\r" in cell for row in rows for cell in row):
-        raise ValueError("Copia 2, 4 o 7 columnas, con un producto por fila y sin saltos dentro de las celdas.")
-    rows = [row + [""] * (width - len(row)) for row in rows]
-    return rows
-
 class TivendoWindow(ttk.Frame):
     def __init__(self, master, listado_path: Optional[Path] = None, go_home_cb=None):
         super().__init__(master)
@@ -4588,8 +4573,6 @@ class TivendoWindow(ttk.Frame):
         ttk.Label(tools, text="Rango 1 habilitado", style="Muted.TLabel").pack(side="left")
         self.btn_segundo_rango = ttk.Button(tools, text="+ Segundo rango y precio", command=self._alternar_segundo_rango)
         self.btn_segundo_rango.pack(side="left", padx=8)
-        self.btn_pegar_precios = ttk.Button(tools, text="Pegar tabla de Excel", command=self._pegar_tabla_precios)
-        self.btn_pegar_precios.pack(side="right")
         ttk.Button(tools, text="Ejemplo", command=self._ejemplo_precios).pack(side="right", padx=6)
         self.lbl_pegado_precios = ttk.Label(f, text="Pega una columna completa en cada cuadro.", style="Muted.TLabel", wraplength=900)
         self.lbl_pegado_precios.pack(anchor="w", pady=(0, 6))
@@ -4661,7 +4644,6 @@ class TivendoWindow(ttk.Frame):
             # El bloque mantiene un ancho moderado y centrado; el alto usa el espacio disponible.
             self._area_columnas_precios.columnconfigure(index, weight=0)
         self.btn_segundo_rango.config(text="− Quitar segundo rango" if self.enable_r2.get() else "+ Segundo rango y precio")
-        self.btn_pegar_precios.config(text=f"Pegar tabla de {len(active)} columnas")
         self._actualizar_pegado_precios()
 
     def _desplazar_columnas_precios(self, *args):
@@ -4715,10 +4697,7 @@ class TivendoWindow(ttk.Frame):
             text = self.clipboard_get()
             raw = list(csv.reader(io.StringIO(text), delimiter="\t"))
             if any(any(cell.strip() for cell in row[1:]) for row in raw):
-                if index == 0:
-                    self._pegar_tabla_precios()
-                else:
-                    messagebox.showwarning("Pega una columna", "En este cuadro pega una sola columna de Excel. Para pegar una tabla completa usa el botón de arriba.")
+                messagebox.showwarning("Pega una columna", "Copia y pega una sola columna de Excel en el cuadro que corresponda.")
                 return "break"
             values = [row[0].strip() if row else "" for row in raw]
             headers = ({"barra", "barras", "barra interna", "barras internas", "codigo barra interno", "codigobarrainterno", "codigo"},
@@ -4800,7 +4779,7 @@ class TivendoWindow(ttk.Frame):
             widget.delete("1.0", "end")
         self._actualizar_pegado_precios()
 
-    def _escribir_tabla_precios(self, rows, ejemplo=False):
+    def _cargar_filas_precios(self, rows, ejemplo=False):
         width = max(map(len, rows), default=4)
         if width not in (2, 4, 7):
             raise ValueError("La tabla debe tener 2, 4 o 7 columnas.")
@@ -4817,24 +4796,6 @@ class TivendoWindow(ttk.Frame):
             widget.insert("1.0", "\n".join(row[index] for row in normalized))
         self._toggle_r2()
 
-    def _pegar_excel_en_barras(self, event=None):
-        try:
-            if "\t" in self.clipboard_get():
-                self._pegar_tabla_precios()
-                return "break"
-        except tk.TclError:
-            pass
-
-    def _pegar_tabla_precios(self):
-        try:
-            rows = parsear_tabla_precios(self.clipboard_get())
-            if any(widget.get("1.0", "end-1c").strip() for widget in self._textos_precios()):
-                if not messagebox.askyesno("Reemplazar datos", "¿Reemplazar los códigos y precios pegados con la tabla copiada?"):
-                    return
-            self._escribir_tabla_precios(rows)
-        except (ValueError, tk.TclError) as exc:
-            messagebox.showwarning("Cómo pegar desde Excel", f"{exc}\n\nBarra | Rango inicial 1 | Rango final 1 | Precio 1\nCon segundo rango: añade Rango inicial 2 | Rango final 2 | Precio 2.\nTambién se admite Barra | Precio.")
-
     def _ejemplo_precios(self):
         if self.df_map is None or self.df_map.empty:
             messagebox.showinfo("Espera al listado", "Primero deja que termine de cargarse el listado.")
@@ -4847,7 +4808,7 @@ class TivendoWindow(ttk.Frame):
         rows = [[row.CodigoBarraInterno, "1", "1", "590", "2", "3", "450"]
                 if self.enable_r2.get() else [row.CodigoBarraInterno, "1", "1000", "1290"]
                 if self.ingresar_rangos.get() else [row.CodigoBarraInterno, "1290"] for row in sample.itertuples()]
-        self._escribir_tabla_precios(rows, ejemplo=True)
+        self._cargar_filas_precios(rows, ejemplo=True)
 
     def _build_preview_from_paste(self):
         if self.df_map is None:

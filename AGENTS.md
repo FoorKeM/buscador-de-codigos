@@ -94,7 +94,7 @@ Progress dialog. Runs `transform_export(path, progress_cb)` in a background thre
 
 ### TivendoWindow (Toplevel) — 3-step wizard
 - **Step A**: select listado, loads async in thread
-- **Step B**: independent multiline paste columns, with range 1 always visible/required. The block is horizontally centered, with moderate fixed barcode/price/quantity widths (24/14/8 characters). Columns use the available height and share one vertical scrollbar; no horizontal scrollbars. Only range 2 and price 2 are optional. Quantities max 1000. Ctrl+V replaces only its target column and preserves internal empty rows. Complete 2, 4 or 7-column Excel tables are also accepted; 2-column paste visibly fills range 1 with 1–1000.
+- **Step B**: independent multiline paste columns, with range 1 always visible/required. The block is horizontally centered, with moderate fixed barcode/price/quantity widths (24/14/8 characters). Columns use the available height and share one vertical scrollbar; no horizontal scrollbars. Only range 2 and price 2 are optional. Quantities max 1000. Ctrl+V replaces only its target column and preserves internal empty rows. There is no whole-table paste button/parser/fallback; multi-column clipboard content is rejected without changing existing data.
 - **Step C**: preview treeview with editable Precio column, range assignment, Excel export for Tivendo import
 - Uses pre-computed `_df_preview_norm` dict for O(1) row filtering
 

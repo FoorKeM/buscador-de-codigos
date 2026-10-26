@@ -12,10 +12,9 @@ def paste_view(rows):
     view._campos_columnas_precios = [Widget() for _ in range(7)]
     view._area_columnas_precios = Widget()
     view.btn_segundo_rango = Widget()
-    view.btn_pegar_precios = Widget()
     view.lbl_formato_precios = Widget()
     if rows:
-        view._escribir_tabla_precios(rows)
+        view._cargar_filas_precios(rows)
     else:
         view._configurar_columnas_pegado()
     return view
@@ -30,22 +29,10 @@ class PriceRangePasteTests(unittest.TestCase):
             with self.subTest(text=text), self.assertRaises(ValueError):
                 app.normalizar_cantidad_rango(text)
 
-    def test_pegado_excel_conserva_barras_y_tres_formatos(self):
-        for text, width in (('Barra interna\tPrecio\n00123\t1290', 2),
-                ('Barra\tRangoInicial1\tRangoFinal1\tPrecio1\n00123\t1\t1000\t1290', 4),
-                ('Código\tRangoInicial1\tRangoFinal1\tPrecio1\tRangoInicial2\tRangoFinal2\tPrecio2\n00123\t1\t2\t1290\t3\t1000\t990', 7)):
-            rows = app.parsear_tabla_precios(text)
-            self.assertEqual(len(rows[0]), width)
-            self.assertEqual(rows[0][0], '00123')
-        for text in ('', '00123', '00123\t1\t2', '00123\t1\t2\t3\t4\t5'):
-            with self.subTest(text=text), self.assertRaises(ValueError):
-                app.parsear_tabla_precios(text)
-
     def test_dos_rangos_habilitan_siete_campos_y_respetan_los_precios(self):
         view = paste_view([['00123', '1', '2', '1290', '3', '1000', '990']])
         self.assertTrue(view.ingresar_rangos.get())
         self.assertTrue(view.enable_r2.get())
-        self.assertIn('7 columnas', view.btn_pegar_precios.options['text'])
         self.assertTrue(view._campos_columnas_precios[4].visible)
         self.assertTrue(view._actualizar_pegado_precios())
         view._build_preview_from_paste()
@@ -73,7 +60,6 @@ class PriceRangePasteTests(unittest.TestCase):
         self.assertTrue(view.ingresar_rangos.get())
         self.assertEqual(view.txt_ri2.text, '3')
         self.assertEqual(view.txt_rf2.text, '1000')
-        self.assertIn('7 columnas', view.btn_pegar_precios.options['text'])
 
     def test_columna_de_rango_vacia_no_desplaza_filas(self):
         view = paste_view([['00123','1','2','1290'], ['00456','','1000','1990'], ['00789','3','1000','990']])
@@ -176,7 +162,6 @@ class PriceRangePasteTests(unittest.TestCase):
 
     def test_un_rango_usa_cuatro_columnas_y_oculta_el_segundo_bloque(self):
         view = paste_view([['00123','1','1000','1290']])
-        self.assertIn('4 columnas', view.btn_pegar_precios.options['text'])
         self.assertFalse(view._campos_columnas_precios[4].visible)
         self.assertTrue(view._campos_columnas_precios[1].visible)
         self.assertTrue(view._campos_columnas_precios[2].visible)
@@ -256,13 +241,15 @@ class PriceRangePasteTests(unittest.TestCase):
         view._pegar_columna_precio(3)
         self.assertEqual(view._read_pasted_lists(), (['00123','00456'], ['1290','1990']))
 
-    def test_varias_columnas_en_el_cuadro_de_precio_no_sobrescriben_datos(self):
-        view = paste_view([['00123','1290']])
+    def test_varias_columnas_no_se_reparten_en_ningun_cuadro(self):
+        view = paste_view([['00123','1','2','1290','3','1000','990']])
+        original = [widget.text for widget in view._textos_precios()]
         view.clipboard_get = lambda: '00123\t1990'
-        with mock.patch.object(app.messagebox, 'showwarning') as warning:
-            view._pegar_columna_precio(3)
-        warning.assert_called_once()
-        self.assertEqual(view.txt_prec.text, '1290')
+        for index in range(7):
+            with self.subTest(index=index), mock.patch.object(app.messagebox, 'showwarning') as warning:
+                self.assertEqual(view._pegar_columna_precio(index), 'break')
+                warning.assert_called_once()
+                self.assertEqual([widget.text for widget in view._textos_precios()], original)
 
     def test_el_rango_maximo_es_1000_tambien_en_pegado_individual(self):
         view = paste_view([['00123','1','1000','1290']])

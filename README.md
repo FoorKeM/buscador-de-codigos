@@ -69,7 +69,7 @@ Las columnas tienen un ancho intermedio y se presentan centradas, sin estirarse 
 
 **+ Segundo rango y precio** muestra **Rango inicial 2 | Rango final 2 | Precios 2**. También puedes pegar cada una de estas columnas por separado. Si un producto no tiene segundo rango, sus tres campos se dejan vacíos. Los rangos no pueden superponerse. Al desactivar el segundo rango, sus datos no se exportan.
 
-Como opción adicional, el botón **Pegar tabla** admite 2, 4 o 7 columnas juntas, en el orden de los campos. La primera columna contiene la barra interna que el programa usa para encontrar el código del artículo. Sin rangos personalizados se usa inicial `1` y final `1000`. La vista previa permite revisar y editar antes de guardar. El archivo generado mantiene las siete columnas de Tivendo (`Código`, `RangoInicial1`, `RangoFinal1`, `Precio1`, `RangoInicial2`, `RangoFinal2`, `Precio2`).
+El pegado se realiza **una columna por vez**, en el cuadro que elijas. Si copias varias columnas juntas, se pide copiar una sola y se conservan los datos ya ingresados. No hay botón ni función de pegado de tablas completas. La vista previa permite revisar y editar antes de guardar. El archivo generado mantiene las siete columnas de Tivendo (`Código`, `RangoInicial1`, `RangoFinal1`, `Precio1`, `RangoInicial2`, `RangoFinal2`, `Precio2`).
 
 ## Comprobación y límites
 
