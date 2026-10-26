@@ -55,7 +55,7 @@ class PriceRangePasteTests(unittest.TestCase):
 
     def test_compatibilidad_de_dos_columnas_y_rango_por_defecto(self):
         view = paste_view([['00123', '1990']])
-        self.assertFalse(view.ingresar_rangos.get())
+        self.assertTrue(view.ingresar_rangos.get())
         self.assertFalse(view.enable_r2.get())
         self.assertTrue(view._actualizar_pegado_precios())
         view._build_preview_from_paste()
@@ -64,8 +64,7 @@ class PriceRangePasteTests(unittest.TestCase):
 
     def test_activar_segundo_rango_activa_primero_y_precio_sin_borrar_textos(self):
         view = paste_view([['00123', '1', '2', '1290', '3', '1000', '990']])
-        view.ingresar_rangos.set(False)
-        view._cambiar_ingreso_rangos()
+        view._alternar_segundo_rango()
         self.assertFalse(view.enable_r2.get())
         self.assertFalse(view._campos_columnas_precios[4].visible)
         self.assertEqual(view.txt_prec2.text, '990')
@@ -204,7 +203,7 @@ class PriceRangePasteTests(unittest.TestCase):
         self.assertEqual(view.txt_prec.text.strip(), '')
         view.clipboard_get = lambda: '\r\n'.join(prices) + '\r\n'
         view._pegar_columna_precio(3)
-        self.assertFalse(view.ingresar_rangos.get())
+        self.assertTrue(view.ingresar_rangos.get())
         self.assertEqual(view._read_pasted_lists(), (codes, prices))
         self.assertTrue(view._actualizar_pegado_precios())
         view._build_preview_from_paste()
@@ -279,6 +278,45 @@ class PriceRangePasteTests(unittest.TestCase):
         view.ingresar_rangos.set(True)
         view._cambiar_ingreso_rangos()
         self.assertEqual(view.txt_rf1.text, '2')
+
+    def test_primer_rango_siempre_habilitado_y_solo_segundo_opcional(self):
+        view = paste_view([])
+        self.assertTrue(view.ingresar_rangos.get())
+        self.assertEqual(view._indices_columnas_precios(), [0,1,2,3])
+        view.ingresar_rangos.set(False)
+        view._configurar_columnas_pegado()
+        self.assertTrue(view.ingresar_rangos.get())
+        self.assertTrue(view._campos_columnas_precios[1].visible)
+        self.assertTrue(view._campos_columnas_precios[2].visible)
+        view._alternar_segundo_rango()
+        self.assertEqual(view._indices_columnas_precios(), list(range(7)))
+        view._alternar_segundo_rango()
+        self.assertEqual(view._indices_columnas_precios(), [0,1,2,3])
+        self.assertTrue(view.ingresar_rangos.get())
+
+    def test_columnas_no_se_ensanchan_al_activar_segundo_rango(self):
+        view = paste_view([])
+        for second in (True, False):
+            view.enable_r2.set(second)
+            view._configurar_columnas_pegado()
+            for index in range(7):
+                self.assertEqual(view._area_columnas_precios.options[('column',index)]['weight'], 0)
+
+    def test_alto_crece_con_productos_y_se_limita_al_espacio_disponible(self):
+        self.assertEqual(app.filas_visibles_pegado(0), 3)
+        self.assertEqual(app.filas_visibles_pegado(5), 6)
+        self.assertEqual(app.filas_visibles_pegado(10), 11)
+        self.assertEqual(app.filas_visibles_pegado(100, 400, 20), 16)
+        self.assertLess(app.filas_visibles_pegado(100, 250, 20), app.filas_visibles_pegado(100, 400, 20))
+        view = paste_view([])
+        self.assertEqual(view.txt_cod.options['height'], 3)
+        view.clipboard_get = lambda: '\n'.join(f'00{i}' for i in range(10))
+        view._pegar_columna_precio(0)
+        self.assertEqual(view.txt_cod.options['height'], 11)
+        self.assertEqual(view.txt_prec.options['height'], 11)
+        self.assertEqual(view.txt_ri1.options['height'], 11)
+        view._limpiar_pegado_precios()
+        self.assertEqual(view.txt_cod.options['height'], 3)
 
 
 if __name__ == '__main__':

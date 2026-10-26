@@ -23,13 +23,13 @@ class Widget:
     def stop(self):pass
     def grid(self,**kw):self.visible=True
     def grid_remove(self):self.visible=False
-    def columnconfigure(self,*a,**kw):pass
+    def columnconfigure(self,index,**kw):self.options[('column',index)]=kw
 class Var:
     def __init__(self, value): self.value=value
     def get(self): return self.value
     def set(self, value): self.value=value
 class Text:
-    def __init__(self, text=''): self.text=text; self.errors=[]
+    def __init__(self, text=''): self.text=text; self.errors=[]; self.options={}
     def get(self,*a): return self.text
     def delete(self,*a): self.text=''
     def insert(self,index,text): self.text = self.text + text if index == 'end-1c' else text
@@ -37,6 +37,7 @@ class Text:
     def tag_remove(self,*a): self.errors=[]
     def tag_add(self,*a): self.errors.append(a)
     def see(self,*a):pass
+    def configure(self,**kw):self.options.update(kw)
 class Tree(Widget):
     def __init__(self):super().__init__();self.rows={}
     def get_children(self):return tuple(self.rows)
@@ -60,7 +61,7 @@ def fixture():
     view._rangos_fuente='Archivo de prueba'
     view._listado_load_job=0
     view._modo_ejemplo_precios=False
-    view.ingresar_rangos=Var(False)
+    view.ingresar_rangos=Var(True)
     view.enable_r2=Var(False)
     for name in ('txt_cod','txt_ri1','txt_rf1','txt_prec','txt_ri2','txt_rf2','txt_prec2'):
         setattr(view,name,Text())
@@ -128,6 +129,8 @@ class PriceChangesTests(unittest.TestCase):
         view=fixture()
         view.txt_cod.text='00123\n99999'
         view.txt_prec.text='1990\n2990'
+        view.txt_ri1.text='1\n1'
+        view.txt_rf1.text='1000\n1000'
         view._build_preview_from_paste()
         self.assertEqual(len(view.tree.rows),2)
         self.assertEqual(view.tree.rows['0']['Código'],'A022766')

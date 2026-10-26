@@ -63,7 +63,9 @@ La revisión muestra el artículo y el precio nuevo que ingresó la persona. Los
 
 En el paso **Pegar precios**, copia la columna de barras de Excel y pégala en **Barras internas**; después copia la columna de precios y pégala en **Precios 1**. Puedes pegar diez o más productos en cada operación, sin agregarlos uno por uno. **Ctrl+V reemplaza únicamente la columna elegida** y conserva las filas vacías intermedias para no desplazar los precios a otro producto.
 
-**Habilitar rangos** muestra **Rango inicial 1** y **Rango final 1** entre las barras y los precios, como columnas angostas de seis caracteres. Si ambas están vacías, se completan inicialmente con `1` y `1000` para los productos ya pegados; puedes pegar tus propias cantidades encima. Las cantidades admiten valores mayores que cero y hasta **1000**, incluyendo `0,001` para kilos.
+El **primer rango siempre está habilitado**: **Rango inicial 1** y **Rango final 1** aparecen entre barras y precios. Al pegar las barras, si ambos campos están vacíos, se completan con `1` y `1000`; puedes pegar tus propias cantidades encima. Las cantidades admiten valores mayores que cero y hasta **1000**, incluyendo `0,001` para kilos.
+
+Las barras, cantidades y precios mantienen un ancho corto, sin estirarse a todo el ancho de la ventana. Los cuadros empiezan con pocas líneas y crecen hacia abajo según las filas pegadas, hasta el espacio disponible. Después se utiliza el desplazamiento compartido, conservando las filas alineadas.
 
 **+ Segundo rango y precio** muestra **Rango inicial 2 | Rango final 2 | Precios 2**. También puedes pegar cada una de estas columnas por separado. Si un producto no tiene segundo rango, sus tres campos se dejan vacíos. Los rangos no pueden superponerse. Al desactivar el segundo rango, sus datos no se exportan.
 

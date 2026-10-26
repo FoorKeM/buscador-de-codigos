@@ -263,11 +263,11 @@ class InterfazTests(unittest.TestCase):
         self.assertEqual(view._read_pasted_lists()[0], ["001", "", "002"])
         view._escribir_tabla_precios([["001", "1290"], ["002", "2990"]])
         view._build_preview_from_paste()
-        compact = ("Código", "Nombre", "CodigoBarraInterno", "Precio1", "RangoExistente")
+        compact = ("Código", "Nombre", "CodigoBarraInterno", "RangoInicial1", "RangoFinal1", "Precio1", "RangoExistente")
         self.assertEqual(tuple(view.tree["displaycolumns"]), compact)
         view.var_opciones_rangos.set(True)
         view._toggle_opciones_rangos()
-        self.assertEqual(tuple(view.tree["displaycolumns"]), compact[:3] + ("RangoInicial1", "RangoFinal1") + compact[3:])
+        self.assertEqual(tuple(view.tree["displaycolumns"]), compact)
         view.var_opciones_rangos.set(False)
         view._toggle_opciones_rangos()
         with tempfile.TemporaryDirectory() as directory:

@@ -103,7 +103,7 @@ _RE_CODE_TOKEN = re.compile(r"[a-z0-9-]{3,}")  # valida cada trozo de codigo (le
 
 STRIPE_COLOR = "#F3F6FA"
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v149"
+APP_VERSION  = "v150"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -4288,6 +4288,12 @@ def clean_price(s: str) -> str:
     return s
 
 
+def filas_visibles_pegado(productos, espacio=400, alto_linea=20):
+    """Empieza pequeño, crece por filas y reserva espacio para títulos/scroll."""
+    capacity = max(3, int((max(0, espacio) - 65) // max(1, alto_linea)))
+    return min(max(3, productos + 1), capacity)
+
+
 def normalizar_cantidad_rango(texto):
     """Una cantidad por campo, con coma o punto decimal, sin separador de miles."""
     text = str(texto).strip()
@@ -4382,7 +4388,7 @@ class TivendoWindow(ttk.Frame):
         self._rangos_fuente = "Rangos: sin archivo guardado; compruébalos en Tivendo."
 
         self.enable_r2 = tk.BooleanVar(value=False)
-        self.ingresar_rangos = tk.BooleanVar(value=False)
+        self.ingresar_rangos = tk.BooleanVar(value=True)
         self.export_only_valid = tk.BooleanVar(value=True)
 
         self._build_stepA_select_listado()
@@ -4585,8 +4591,7 @@ class TivendoWindow(ttk.Frame):
                   style="Muted.TLabel").pack(anchor="w", pady=(3, 8))
         tools = ttk.Frame(f)
         tools.pack(fill="x", pady=(0, 6))
-        ttk.Checkbutton(tools, text="Habilitar rangos", variable=self.ingresar_rangos,
-                        command=self._cambiar_ingreso_rangos).pack(side="left")
+        ttk.Label(tools, text="Rango 1 habilitado", style="Muted.TLabel").pack(side="left")
         self.btn_segundo_rango = ttk.Button(tools, text="+ Segundo rango y precio", command=self._alternar_segundo_rango)
         self.btn_segundo_rango.pack(side="left", padx=8)
         self.btn_pegar_precios = ttk.Button(tools, text="Pegar tabla de Excel", command=self._pegar_tabla_precios)
@@ -4596,23 +4601,22 @@ class TivendoWindow(ttk.Frame):
         self.lbl_pegado_precios.pack(anchor="w", pady=(0, 6))
 
         area = ttk.Frame(f)
-        area.pack(fill="both", expand=True)
-        area.rowconfigure(0, weight=1)
+        area.pack(anchor="nw")
         self._area_columnas_precios = area
         self._campos_columnas_precios = []
         self._sincronizando_columnas_precios = False
-        fields = (("txt_cod", "Barras internas", 22), ("txt_ri1", "Rango inicial 1", 6),
-                  ("txt_rf1", "Rango final 1", 6), ("txt_prec", "Precios 1", 18),
+        fields = (("txt_cod", "Barras internas", 18), ("txt_ri1", "Rango inicial 1", 6),
+                  ("txt_rf1", "Rango final 1", 6), ("txt_prec", "Precios 1", 10),
                   ("txt_ri2", "Rango inicial 2", 6), ("txt_rf2", "Rango final 2", 6),
-                  ("txt_prec2", "Precios 2", 18))
+                  ("txt_prec2", "Precios 2", 10))
         for index, (attribute, title, width) in enumerate(fields):
             shell = ttk.Frame(area)
             shell.grid(row=0, column=index, sticky="nsew", padx=(0, 6))
             shell.rowconfigure(1, weight=1)
             shell.rowconfigure(0, minsize=36)
             shell.columnconfigure(0, weight=1)
-            ttk.Label(shell, text=title, style="Muted.TLabel", wraplength=72 if width == 6 else 180).grid(row=0, column=0, sticky="w")
-            text = tk.Text(shell, wrap="none", width=width, height=12, undo=True,
+            ttk.Label(shell, text=title, style="Muted.TLabel", wraplength=72 if width == 6 else 140 if index == 0 else 90).grid(row=0, column=0, sticky="sw")
+            text = tk.Text(shell, wrap="none", width=width, height=3, undo=True,
                            font=("Segoe UI", 10), background=UI["surface"], foreground=UI["ink"],
                            insertbackground=UI["ink"], selectbackground=UI["selected"],
                            relief="flat", borderwidth=0, highlightthickness=1,
@@ -4637,6 +4641,7 @@ class TivendoWindow(ttk.Frame):
         ttk.Label(f, text="Ctrl+V reemplaza solo la columna elegida. Las cantidades admiten hasta 1000.",
                   style="Muted.TLabel").pack(anchor="w", pady=(6, 0))
         bottom = ttk.Frame(f)
+        self._pie_pegado_precios = bottom
         bottom.pack(fill="x", pady=(10, 0))
         ttk.Button(bottom, text="← Volver", command=lambda: self._show(self.stepA)).pack(side="left")
         ttk.Button(bottom, text="Limpiar columnas", command=self._limpiar_pegado_precios).pack(side="left", padx=6)
@@ -4646,31 +4651,43 @@ class TivendoWindow(ttk.Frame):
         area.pack_forget()
         bottom.pack_forget()
         bottom.pack(side="bottom", fill="x", pady=(10, 0))
-        area.pack(fill="both", expand=True)
+        area.pack(anchor="nw")
+        self._alto_linea_pegado = tkfont.Font(font=self.txt_cod.cget("font")).metrics("linespace")
+        f.bind("<Configure>", lambda _event: self._ajustar_altura_columnas_precios())
         self._configurar_columnas_pegado()
 
     def _textos_precios(self):
         return self.txt_cod, self.txt_ri1, self.txt_rf1, self.txt_prec, self.txt_ri2, self.txt_rf2, self.txt_prec2
 
     def _indices_columnas_precios(self):
-        indices = [0, 1, 2, 3] if self.ingresar_rangos.get() else [0, 3]
+        indices = [0, 1, 2, 3]
         return indices + [4, 5, 6] if self.enable_r2.get() else indices
 
     def _configurar_columnas_pegado(self):
-        if self.enable_r2.get():
-            self.ingresar_rangos.set(True)
+        self.ingresar_rangos.set(True)
         active = self._indices_columnas_precios()
         for index, shell in enumerate(self._campos_columnas_precios):
             if index in active:
                 shell.grid()
             else:
                 shell.grid_remove()
-            # Solo barras y precios se ensanchan: las cantidades conservan seis caracteres.
-            weight = (3 if index == 0 else 2) if index in active and index in (0, 3, 6) else 0
-            self._area_columnas_precios.columnconfigure(index, weight=weight)
+            # Ninguna columna se ensancha con la ventana; solo crece el alto por productos.
+            self._area_columnas_precios.columnconfigure(index, weight=0)
         self.btn_segundo_rango.config(text="− Quitar segundo rango" if self.enable_r2.get() else "+ Segundo rango y precio")
         self.btn_pegar_precios.config(text=f"Pegar tabla de {len(active)} columnas")
         self._actualizar_pegado_precios()
+
+    def _ajustar_altura_columnas_precios(self, productos=None):
+        if productos is None:
+            productos = max((len(widget.get("1.0", "end-1c").splitlines())
+                             for widget in self._textos_precios()), default=0)
+        available = 400
+        if hasattr(self, "_pie_pegado_precios") and self.stepB.winfo_height() > 200:
+            available = (self.stepB.winfo_height() - self._area_columnas_precios.winfo_y()
+                         - self._pie_pegado_precios.winfo_reqheight() - 32)
+        lines = filas_visibles_pegado(productos, available, getattr(self, "_alto_linea_pegado", 20))
+        for widget in self._textos_precios():
+            widget.configure(height=lines)
 
     def _desplazar_columnas_precios(self, *args):
         self._sincronizando_columnas_precios = True
@@ -4714,10 +4731,8 @@ class TivendoWindow(ttk.Frame):
         self._toggle_r2()
 
     def _cambiar_ingreso_rangos(self):
-        if not self.ingresar_rangos.get():
-            self.enable_r2.set(False)
-        else:
-            self._rellenar_rango1_por_defecto()
+        self.ingresar_rangos.set(True)
+        self._rellenar_rango1_por_defecto()
         self._toggle_r2()
 
     def _pegar_columna_precio(self, index):
@@ -4754,8 +4769,6 @@ class TivendoWindow(ttk.Frame):
 
     def _leer_filas_precios(self):
         columns = [widget.get("1.0", "end-1c").splitlines() for widget in self._textos_precios()]
-        if not self.ingresar_rangos.get():
-            columns[1] = columns[2] = []
         if not self.enable_r2.get():
             columns[4] = columns[5] = columns[6] = []
         rows = []
@@ -4791,7 +4804,7 @@ class TivendoWindow(ttk.Frame):
         for widget in widgets:
             widget.tag_remove("error_dato", "1.0", "end")
         for line, values in rows:
-            _, errors = preparar_fila_precio(values, self.ingresar_rangos.get(), self.enable_r2.get())
+            _, errors = preparar_fila_precio(values, True, self.enable_r2.get())
             if errors:
                 valid = False
             for index, detail in errors.items():
@@ -4799,6 +4812,7 @@ class TivendoWindow(ttk.Frame):
                 if not first_error:
                     first_error = f"Fila {line}: {detail}."
         count = len(rows)
+        self._ajustar_altura_columnas_precios(height)
         text = ("PRÁCTICA · " if self._modo_ejemplo_precios else "")
         text += f"{count} producto(s) · " + ("Listo para comprobar en el listado." if valid else first_error or "Completa una barra, su rango y su precio por fila.")
         self.lbl_pegado_precios.config(text=text, style="Success.TLabel" if valid else "Muted.TLabel" if not count else "Warning.TLabel")
@@ -4817,12 +4831,13 @@ class TivendoWindow(ttk.Frame):
         if width not in (2, 4, 7):
             raise ValueError("La tabla debe tener 2, 4 o 7 columnas.")
         self._modo_ejemplo_precios = ejemplo
-        self.ingresar_rangos.set(width != 2)
+        self.ingresar_rangos.set(True)
         self.enable_r2.set(width == 7)
         normalized = []
         for row in rows:
             row = list(row) + [""] * (width - len(row))
-            normalized.append([row[0], "", "", row[1], "", "", ""] if width == 2 else row + [""] * (7 - width))
+            normalized.append([row[0], "1" if row[0].strip() else "", "1000" if row[0].strip() else "", row[1], "", "", ""]
+                              if width == 2 else row + [""] * (7 - width))
         for index, widget in enumerate(self._textos_precios()):
             widget.delete("1.0", "end")
             widget.insert("1.0", "\n".join(row[index] for row in normalized))
@@ -4866,7 +4881,7 @@ class TivendoWindow(ttk.Frame):
         if not self._actualizar_pegado_precios():
             messagebox.showwarning("Revisa las filas", "Corrige las celdas marcadas: barra, rango y precio deben corresponder a la misma fila.")
             return
-        records = [preparar_fila_precio(values, self.ingresar_rangos.get(), self.enable_r2.get())[0]
+        records = [preparar_fila_precio(values, True, self.enable_r2.get())[0]
                    for _, values in self._leer_filas_precios()]
         df_in = pd.DataFrame(records)
         df = df_in.merge(self.df_map, on="CodigoBarraInterno", how="left")
