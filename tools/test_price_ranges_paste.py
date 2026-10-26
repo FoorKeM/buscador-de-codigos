@@ -7,35 +7,17 @@ from unittest import mock
 from tools.test_price_changes import app, fixture, Var, Widget
 
 
-class PasteTable(Widget):
-    def __init__(self):
-        super().__init__()
-        self.rows = {}
-        self.selected = ()
-    def selection(self): return self.selected
-    def selection_set(self, items): self.selected = tuple(items)
-    def get_children(self): return tuple(self.rows)
-    def delete(self, *ids):
-        for item in ids: self.rows.pop(item)
-    def insert(self, *args, iid, values, tags): self.rows[iid] = (values, tags)
-    def identify_row(self, y): return str(y) if str(y) in self.rows else ""
-
-
 def paste_view(rows):
     view = fixture()
-    view._campos_editor_precios = [Widget() for _ in range(7)]
-    view._bloques_editor_precios = [Widget() for _ in range(3)]
-    view.btn_pegar_precios = Widget()
+    view._campos_columnas_precios = [Widget() for _ in range(7)]
+    view._area_columnas_precios = Widget()
     view.btn_segundo_rango = Widget()
-    view.tabla_pegado_precios = PasteTable()
-    view._columnas_tabla_pegado = ("Barra", "RangoInicial1", "RangoFinal1", "Precio1", "RangoInicial2", "RangoFinal2", "Precio2")
-    view.lbl_vacio_pegado = Widget()
-    view._editor_precios_vars = [Var(value) for value in ("", "1", "1000", "", "", "", "")]
-    view._editor_precios_entries = [Widget() for _ in range(7)]
-    view.lbl_error_editor_precios = Widget()
-    view.btn_guardar_fila_precios = Widget()
-    view.btn_cancelar_fila_precios = Widget()
-    view._escribir_tabla_precios(rows)
+    view.btn_pegar_precios = Widget()
+    view.lbl_formato_precios = Widget()
+    if rows:
+        view._escribir_tabla_precios(rows)
+    else:
+        view._configurar_columnas_pegado()
     return view
 
 
@@ -64,7 +46,7 @@ class PriceRangePasteTests(unittest.TestCase):
         self.assertTrue(view.ingresar_rangos.get())
         self.assertTrue(view.enable_r2.get())
         self.assertIn('7 columnas', view.btn_pegar_precios.options['text'])
-        self.assertTrue(view._bloques_editor_precios[2].visible)
+        self.assertTrue(view._campos_columnas_precios[4].visible)
         self.assertTrue(view._actualizar_pegado_precios())
         view._build_preview_from_paste()
         row = view.tree.rows['0']
@@ -85,13 +67,13 @@ class PriceRangePasteTests(unittest.TestCase):
         view.ingresar_rangos.set(False)
         view._cambiar_ingreso_rangos()
         self.assertFalse(view.enable_r2.get())
-        self.assertFalse(view._bloques_editor_precios[2].visible)
-        self.assertEqual(view._filas_pegado_precios[0][6], '990')
+        self.assertFalse(view._campos_columnas_precios[4].visible)
+        self.assertEqual(view.txt_prec2.text, '990')
         view.enable_r2.set(True)
         view._toggle_r2()
         self.assertTrue(view.ingresar_rangos.get())
-        self.assertEqual(view._filas_pegado_precios[0][4], '3')
-        self.assertEqual(view._filas_pegado_precios[0][5], '1000')
+        self.assertEqual(view.txt_ri2.text, '3')
+        self.assertEqual(view.txt_rf2.text, '1000')
         self.assertIn('7 columnas', view.btn_pegar_precios.options['text'])
 
     def test_columna_de_rango_vacia_no_desplaza_filas(self):
@@ -99,7 +81,7 @@ class PriceRangePasteTests(unittest.TestCase):
         self.assertFalse(view._actualizar_pegado_precios())
         self.assertIn('Fila 2', view.lbl_pegado_precios.options['text'])
         self.assertEqual(view._read_pasted_lists(), (['00123','00456','00789'], ['1290','1990','990']))
-        self.assertIn(1, view._problemas_pegado_precios[2])
+        self.assertEqual(view.txt_ri1.errors[0][1], '2.0')
 
     def test_rango_sin_barra_marca_fila(self):
         view = paste_view([['','1','2','1290']])
@@ -152,7 +134,7 @@ class PriceRangePasteTests(unittest.TestCase):
                 view._export()
             output = app.pd.read_excel(path, dtype=str).fillna('')
         self.assertEqual(output.iloc[0][['RangoInicial2','RangoFinal2','Precio2']].tolist(), ['', '', ''])
-        self.assertEqual(view._filas_pegado_precios[0][6], '990')
+        self.assertEqual(view.txt_prec2.text, '990')
 
     def test_edicion_de_tabla_con_rangos_cruzados_impide_exportar(self):
         view = paste_view([['00123','1','2','1290','3','1000','990']])
@@ -176,7 +158,7 @@ class PriceRangePasteTests(unittest.TestCase):
         view._modo_ejemplo_precios = True
         view._limpiar_pegado_precios()
         self.assertFalse(view._modo_ejemplo_precios)
-        self.assertEqual(view._filas_pegado_precios, [])
+        self.assertTrue(all(widget.text == '' for widget in view._textos_precios()))
 
     def test_segundo_rango_se_muestra_sin_abrir_opciones_avanzadas(self):
         view = paste_view([['00123','1','2','1290','3','1000','990']])
@@ -191,90 +173,112 @@ class PriceRangePasteTests(unittest.TestCase):
             view = paste_view([['00123', initial, final, '1290']])
             with self.subTest(initial=initial, final=final):
                 self.assertFalse(view._actualizar_pegado_precios())
-                self.assertIn(1 if attribute == 'txt_ri1' else 2, view._problemas_pegado_precios[1])
+                self.assertTrue(getattr(view, attribute).errors)
 
     def test_un_rango_usa_cuatro_columnas_y_oculta_el_segundo_bloque(self):
         view = paste_view([['00123','1','1000','1290']])
         self.assertIn('4 columnas', view.btn_pegar_precios.options['text'])
-        self.assertFalse(view._bloques_editor_precios[2].visible)
-        self.assertTrue(view._campos_editor_precios[1].visible)
-        self.assertTrue(view._campos_editor_precios[2].visible)
+        self.assertFalse(view._campos_columnas_precios[4].visible)
+        self.assertTrue(view._campos_columnas_precios[1].visible)
+        self.assertTrue(view._campos_columnas_precios[2].visible)
 
     def test_ejemplo_con_las_cantidades_de_tivendo_es_practica(self):
         view = paste_view([['00123','1','1','590','2','3','450']])
-        view._filas_pegado_precios = []
+        for widget in view._textos_precios():
+            widget.delete('1.0', 'end')
         view._ejemplo_precios()
         self.assertTrue(view._modo_ejemplo_precios)
-        self.assertEqual(view._filas_pegado_precios[0], ['00123','1','1','590','2','3','450'])
+        self.assertEqual([widget.text for widget in view._textos_precios()], ['00123','1','1','590','2','3','450'])
         with mock.patch.object(app.filedialog, 'asksaveasfilename') as save, mock.patch.object(app.messagebox, 'showinfo'):
             view._export()
             save.assert_not_called()
 
-    def test_agregar_y_editar_una_fila_desde_los_campos_cortos(self):
+    def test_pega_diez_barras_y_despues_diez_precios_sin_agregar_uno_por_uno(self):
         view = paste_view([])
-        values = ['00123','1','2','1290','3','1000','990']
-        view.enable_r2.set(True)
-        for var, value in zip(view._editor_precios_vars, values):
-            var.set(value)
-        self.assertTrue(view._guardar_fila_pegado())
-        self.assertEqual(view._filas_pegado_precios, [values])
-        self.assertFalse(view._hay_borrador_precio())
-        view.tabla_pegado_precios.selection_set(['0'])
-        view._editar_fila_pegado()
-        self.assertEqual(view._fila_editor_precios, 0)
-        view._editor_precios_vars[3].set('1490')
-        self.assertTrue(view._guardar_fila_pegado())
-        self.assertEqual(len(view._filas_pegado_precios), 1)
-        self.assertEqual(view._filas_pegado_precios[0][3], '1490')
+        codes = [f'00000{i:02}' for i in range(10)]
+        prices = [str(990 + i * 100) for i in range(10)]
+        view.df_map = app.pd.DataFrame({'Identificador': [f'A{i:06}' for i in range(10)],
+            'CodigoBarraInterno': codes, 'Nombre': [f'PRODUCTO {i}' for i in range(10)]})
+        view.clipboard_get = lambda: '\r\n'.join(codes) + '\r\n'
+        self.assertEqual(view._pegar_columna_precio(0), 'break')
+        self.assertEqual(view.txt_prec.text.strip(), '')
+        view.clipboard_get = lambda: '\r\n'.join(prices) + '\r\n'
+        view._pegar_columna_precio(3)
+        self.assertFalse(view.ingresar_rangos.get())
+        self.assertEqual(view._read_pasted_lists(), (codes, prices))
+        self.assertTrue(view._actualizar_pegado_precios())
+        view._build_preview_from_paste()
+        self.assertEqual(len(view.tree.rows), 10)
+        self.assertEqual([row['Precio1'] for row in view.tree.rows.values()], prices)
+        self.assertEqual([row['CodigoBarraInterno'] for row in view.tree.rows.values()], codes)
 
-    def test_maximo_1000_se_aplica_a_edicion_pegado_y_exportacion(self):
-        view = paste_view([['00123','1','1001','1290']])
+    def test_precio_vacio_intermedio_no_se_corre_a_otro_producto(self):
+        view = paste_view([])
+        view.clipboard_get = lambda: '00123\n00456\n00789'
+        view._pegar_columna_precio(0)
+        view.clipboard_get = lambda: '1290\n\n2990'
+        view._pegar_columna_precio(3)
+        self.assertEqual(view._read_pasted_lists(), (['00123','00456','00789'], ['1290','','2990']))
+        self.assertFalse(view._actualizar_pegado_precios())
+        self.assertIn('Fila 2', view.lbl_pegado_precios.options['text'])
+
+    def test_reemplazar_una_columna_no_toca_las_otras(self):
+        view = paste_view([['00123','1','1000','1290'], ['00456','1','1000','1990']])
+        view.clipboard_get = lambda: '1490\n2490'
+        view._pegar_columna_precio(3)
+        self.assertEqual(view.txt_cod.text, '00123\n00456')
+        self.assertEqual(view.txt_ri1.text, '1\n1')
+        self.assertEqual(view.txt_rf1.text, '1000\n1000')
+        self.assertEqual(view.txt_prec.text, '1490\n2490')
+
+    def test_habilitar_rangos_rellena_las_diez_filas_y_pueden_pegarse_por_separado(self):
+        view = paste_view([[f'00{i}', '1290'] for i in range(10)])
+        view.ingresar_rangos.set(True)
+        view._cambiar_ingreso_rangos()
+        self.assertEqual(view.txt_ri1.text.splitlines(), ['1'] * 10)
+        self.assertEqual(view.txt_rf1.text.splitlines(), ['1000'] * 10)
+        view.clipboard_get = lambda: '\n'.join(['1'] * 10)
+        view._pegar_columna_precio(2)
+        view._alternar_segundo_rango()
+        for index, value in ((4,'2'), (5,'1000'), (6,'990')):
+            view.clipboard_get = lambda v=value: '\n'.join([v] * 10)
+            view._pegar_columna_precio(index)
+        self.assertTrue(view.enable_r2.get())
+        self.assertTrue(view._actualizar_pegado_precios())
+        self.assertEqual(view.txt_prec.text.splitlines(), ['1290'] * 10)
+        records = [app.preparar_fila_precio(values, True, True)[0] for _, values in view._leer_filas_precios()]
+        self.assertTrue(all(row['RangoFinal1'] == '1' and row['Precio2'] == '990' for row in records))
+
+    def test_encabezados_individuales_y_ceros_iniciales(self):
+        view = paste_view([])
+        view.clipboard_get = lambda: 'Barras internas\r\n00123\r\n00456\r\n'
+        view._pegar_columna_precio(0)
+        view.clipboard_get = lambda: 'Precio1\r\n1290\r\n1990\r\n'
+        view._pegar_columna_precio(3)
+        self.assertEqual(view._read_pasted_lists(), (['00123','00456'], ['1290','1990']))
+
+    def test_varias_columnas_en_el_cuadro_de_precio_no_sobrescriben_datos(self):
+        view = paste_view([['00123','1290']])
+        view.clipboard_get = lambda: '00123\t1990'
+        with mock.patch.object(app.messagebox, 'showwarning') as warning:
+            view._pegar_columna_precio(3)
+        warning.assert_called_once()
+        self.assertEqual(view.txt_prec.text, '1290')
+
+    def test_el_rango_maximo_es_1000_tambien_en_pegado_individual(self):
+        view = paste_view([['00123','1','1000','1290']])
+        view.clipboard_get = lambda: '1001'
+        view._pegar_columna_precio(2)
         self.assertFalse(view._actualizar_pegado_precios())
         self.assertIn('1000', view.lbl_pegado_precios.options['text'])
-        view._filas_pegado_precios[0][2] = '1000'
-        view._actualizar_pegado_precios()
-        view._build_preview_from_paste()
-        view.tree.set('0', 'RangoFinal1', '1001')
-        view.export_only_valid = Var(True)
-        with mock.patch.object(app.filedialog, 'asksaveasfilename') as save, mock.patch.object(app.messagebox, 'showwarning'):
-            view._export()
-            save.assert_not_called()
-        for var, value in zip(view._editor_precios_vars, ['00123','1','1001','1290','','','']):
-            var.set(value)
-        self.assertFalse(view._guardar_fila_pegado())
-        self.assertIn('1000', view.lbl_error_editor_precios.options['text'])
 
-    def test_quitar_varias_filas_no_quita_otras(self):
-        view = paste_view([['00123','1290'], ['00456','1990'], ['00789','2990']])
-        view.tabla_pegado_precios.selection_set(['0','2'])
-        view._quitar_filas_pegado()
-        self.assertEqual(view._filas_pegado_precios, [['00456','','','1990','','','']])
-
-    def test_la_revision_incluye_edicion_pendiente_y_bloquea_borrador_invalido(self):
-        view = paste_view([['00123','1','1000','1290']])
-        view.tabla_pegado_precios.selection_set(['0'])
-        view._editar_fila_pegado()
-        view._editor_precios_vars[3].set('1490')
-        view._build_preview_from_paste()
-        self.assertEqual(view.tree.rows['0']['Precio1'], '1490')
-        view._editor_precios_vars[0].set('00999')
-        view._editor_precios_vars[3].set('')
-        view._show.reset_mock()
-        view._build_preview_from_paste()
-        view._show.assert_not_called()
-
-    def test_no_se_descarta_edicion_al_cambiar_o_quitar_filas_sin_confirmar(self):
-        view = paste_view([['00123','1290'], ['00456','1990']])
-        view.tabla_pegado_precios.selection_set(['0'])
-        view._editar_fila_pegado()
-        view._editor_precios_vars[3].set('1490')
-        view.tabla_pegado_precios.selection_set(['1'])
-        with mock.patch.object(app.messagebox, 'askyesno', return_value=False):
-            view._editar_fila_pegado()
-            view._quitar_filas_pegado()
-        self.assertEqual(view._fila_editor_precios, 0)
-        self.assertEqual(view._editor_precios_vars[3].get(), '1490')
-        self.assertEqual(len(view._filas_pegado_precios), 2)
+    def test_activar_rango_no_reemplaza_cantidades_ya_pegadas(self):
+        view = paste_view([['00123','1','2','1290']])
+        view.ingresar_rangos.set(False)
+        view._cambiar_ingreso_rangos()
+        view.ingresar_rangos.set(True)
+        view._cambiar_ingreso_rangos()
+        self.assertEqual(view.txt_rf1.text, '2')
 
 
 if __name__ == '__main__':

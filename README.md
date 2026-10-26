@@ -61,11 +61,13 @@ En **Cambios masivos de precios** se usa el listado de artículos guardado para 
 
 La revisión muestra el artículo y el precio nuevo que ingresó la persona. Los rangos opcionales permiten preparar las cantidades y el segundo precio de la importación. No se consulta ni compara un precio actual del catálogo. El Excel para Tivendo conserva sus siete columnas y exporta solo los datos preparados.
 
-En el paso **Pegar precios** hay una fila compacta para ingresar **Barra | Rango inicial 1 | Rango final 1 | Precio 1** y agregar el artículo a una única tabla. Las cantidades tienen casillas cortas y admiten valores mayores que cero y hasta **1000**, incluyendo `0,001` para kilos. Para corregir un producto, haz doble clic en su fila y guarda los cambios. Se pueden quitar varias filas seleccionadas.
+En el paso **Pegar precios**, copia la columna de barras de Excel y pégala en **Barras internas**; después copia la columna de precios y pégala en **Precios 1**. Puedes pegar diez o más productos en cada operación, sin agregarlos uno por uno. **Ctrl+V reemplaza únicamente la columna elegida** y conserva las filas vacías intermedias para no desplazar los precios a otro producto.
 
-**+ Segundo rango** muestra **Rango inicial 2 | Rango final 2 | Precio 2** junto a los campos del primer rango. Si un producto no tiene segundo rango, sus tres campos se dejan vacíos. Los rangos no pueden superponerse. Al desactivar el segundo rango, sus datos no se exportan.
+**Habilitar rangos** muestra **Rango inicial 1** y **Rango final 1** entre las barras y los precios, como columnas angostas de seis caracteres. Si ambas están vacías, se completan inicialmente con `1` y `1000` para los productos ya pegados; puedes pegar tus propias cantidades encima. Las cantidades admiten valores mayores que cero y hasta **1000**, incluyendo `0,001` para kilos.
 
-El pegado desde Excel admite 4 o 7 columnas, en el mismo orden de los campos, y llena directamente la tabla. La primera columna contiene la barra interna que el programa usa para encontrar el código del artículo. Se conserva el formato de 2 columnas (**Barra | Precio**), que usa inicial `1` y final `1000`. El archivo generado mantiene las siete columnas de Tivendo (`Código`, `RangoInicial1`, `RangoFinal1`, `Precio1`, `RangoInicial2`, `RangoFinal2`, `Precio2`).
+**+ Segundo rango y precio** muestra **Rango inicial 2 | Rango final 2 | Precios 2**. También puedes pegar cada una de estas columnas por separado. Si un producto no tiene segundo rango, sus tres campos se dejan vacíos. Los rangos no pueden superponerse. Al desactivar el segundo rango, sus datos no se exportan.
+
+Como opción adicional, el botón **Pegar tabla** admite 2, 4 o 7 columnas juntas, en el orden de los campos. La primera columna contiene la barra interna que el programa usa para encontrar el código del artículo. Sin rangos personalizados se usa inicial `1` y final `1000`. La vista previa permite revisar y editar antes de guardar. El archivo generado mantiene las siete columnas de Tivendo (`Código`, `RangoInicial1`, `RangoFinal1`, `Precio1`, `RangoInicial2`, `RangoFinal2`, `Precio2`).
 
 ## Comprobación y límites
 
