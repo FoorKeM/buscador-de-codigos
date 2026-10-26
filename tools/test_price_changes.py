@@ -14,13 +14,16 @@ REPORT='''<table><tr><td>Código artículo</td><td>Rango 1</td><td>Precio Unitar
 
 COLS=('Código','Nombre','CodigoBarraInterno','Precio1','RangoInicial1','RangoFinal1','Precio2','RangoInicial2','RangoFinal2','RangoExistente')
 class Widget:
-    def __init__(self):self.options={}
+    def __init__(self):self.options={}; self.master=mock.Mock(); self.visible=True
     def config(self,**kw):self.options.update(kw)
     configure=config
     def pack(self,**kw):pass
     def pack_forget(self):pass
     def start(self,*a):pass
     def stop(self):pass
+    def grid(self,**kw):self.visible=True
+    def grid_remove(self):self.visible=False
+    def columnconfigure(self,*a,**kw):pass
 class Var:
     def __init__(self, value): self.value=value
     def get(self): return self.value
@@ -57,7 +60,7 @@ def fixture():
     view._modo_ejemplo_precios=False
     view.ingresar_rangos=Var(False)
     view.enable_r2=Var(False)
-    for name in ('txt_cod','txt_rango1','txt_prec','txt_rango2','txt_prec2'):
+    for name in ('txt_cod','txt_ri1','txt_rf1','txt_prec','txt_ri2','txt_rf2','txt_prec2'):
         setattr(view,name,Text())
     view._toggle_opciones_rangos=mock.Mock()
     view.columns=COLS

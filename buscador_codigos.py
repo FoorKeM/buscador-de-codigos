@@ -103,7 +103,7 @@ _RE_CODE_TOKEN = re.compile(r"[a-z0-9-]{3,}")  # valida cada trozo de codigo (le
 
 STRIPE_COLOR = "#F3F6FA"
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v146"
+APP_VERSION  = "v147"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -203,11 +203,11 @@ def _style_text(widget):
     return widget
 
 
-def _paste_text_column(parent, title):
+def _paste_text_column(parent, title, label_style="TLabel"):
     parent.columnconfigure(0, weight=1)
     parent.rowconfigure(0, minsize=34)
     parent.rowconfigure(1, weight=1)
-    label = ttk.Label(parent, text=title, anchor="w")
+    label = ttk.Label(parent, text=title, anchor="w", style=label_style)
     label.grid(row=0, column=0, columnspan=2, sticky="ew")
     parent.bind("<Configure>", lambda event: label.configure(wraplength=max(80, event.width - 8)))
     text = _style_text(tk.Text(parent, wrap="none", height=8, width=1))
@@ -4288,26 +4288,21 @@ def clean_price(s: str) -> str:
     return s
 
 
-def parsear_rango_cantidades(texto):
-    """Cantidad desde/hasta; admite coma decimal, sin separadores de miles."""
+def normalizar_cantidad_rango(texto):
+    """Una cantidad por campo, con coma o punto decimal, sin separador de miles."""
     text = str(texto).strip()
-    if text.startswith("(") and text.endswith(")"):
-        text = text[1:-1].strip()
-    match = re.fullmatch(r"([0-9]+(?:[.,][0-9]+)?)\s*(?:-|–|—|a)\s*([0-9]+(?:[.,][0-9]+)?)", text, re.I)
-    if not match:
-        raise ValueError("usa desde - hasta, por ejemplo 1 - 2 o 3 - 9999")
-    start, end = (Decimal(value.replace(",", ".")) for value in match.groups())
-    if start <= 0 or end < start:
-        raise ValueError("el inicio debe ser mayor que cero y el final no puede ser menor que el inicio")
-    def canonical(value):
-        text = format(value, "f")
-        return text.rstrip("0").rstrip(".") if "." in text else text
-    return canonical(start), canonical(end)
+    if not re.fullmatch(r"[0-9]+(?:[.,][0-9]+)?", text):
+        raise ValueError("ingresa una cantidad, por ejemplo 1, 9999 o 0,001")
+    value = Decimal(text.replace(",", "."))
+    if value <= 0:
+        raise ValueError("la cantidad debe ser mayor que cero")
+    result = format(value, "f")
+    return result.rstrip("0").rstrip(".") if "." in result else result
 
 
 def preparar_fila_precio(values, con_rangos=True, con_rango2=False):
     """Valida una fila sin UI y devuelve las columnas originales de la importación."""
-    code, range1, price1, range2, price2 = (str(value).strip() for value in values)
+    code, initial1, final1, price1, initial2, final2, price2 = (str(value).strip() for value in values)
     result = {"CodigoBarraInterno": code, "Precio1": clean_price(price1),
               "RangoInicial1": "1", "RangoFinal1": "9999",
               "Precio2": "", "RangoInicial2": "", "RangoFinal2": ""}
@@ -4315,37 +4310,46 @@ def preparar_fila_precio(values, con_rangos=True, con_rango2=False):
     if not code:
         errors[0] = "falta barra interna"
     if not re.fullmatch(r"[0-9]+(?:[.,][0-9]+)?", result["Precio1"]):
-        errors[2] = "revisa el precio 1"
+        errors[3] = "revisa el precio 1"
     if con_rangos:
-        try:
-            result["RangoInicial1"], result["RangoFinal1"] = parsear_rango_cantidades(range1)
-        except ValueError as exc:
-            errors[1] = f"rango 1: {exc}"
-    if con_rango2 and (range2 or price2):
-        try:
-            result["RangoInicial2"], result["RangoFinal2"] = parsear_rango_cantidades(range2)
-            if 1 not in errors and Decimal(result["RangoInicial2"]) <= Decimal(result["RangoFinal1"]):
-                errors[3] = "el rango 2 debe empezar después del final del rango 1"
-        except ValueError as exc:
-            errors[3] = f"rango 2: {exc}"
+        for index, column, value, label in ((1, "RangoInicial1", initial1, "rango inicial 1"),
+                (2, "RangoFinal1", final1, "rango final 1")):
+            try:
+                result[column] = normalizar_cantidad_rango(value)
+            except ValueError as exc:
+                errors[index] = f"{label}: {exc}"
+        if 1 not in errors and 2 not in errors and Decimal(result["RangoFinal1"]) < Decimal(result["RangoInicial1"]):
+            errors[2] = "el rango final 1 no puede ser menor que el inicial 1"
+    if con_rango2 and (initial2 or final2 or price2):
+        for index, column, value, label in ((4, "RangoInicial2", initial2, "rango inicial 2"),
+                (5, "RangoFinal2", final2, "rango final 2")):
+            try:
+                result[column] = normalizar_cantidad_rango(value)
+            except ValueError as exc:
+                errors[index] = f"{label}: {exc}"
+        if 4 not in errors and 5 not in errors:
+            if Decimal(result["RangoFinal2"]) < Decimal(result["RangoInicial2"]):
+                errors[5] = "el rango final 2 no puede ser menor que el inicial 2"
+            if 1 not in errors and 2 not in errors and Decimal(result["RangoInicial2"]) <= Decimal(result["RangoFinal1"]):
+                errors[4] = "el rango inicial 2 debe empezar después del final del rango 1"
         result["Precio2"] = clean_price(price2)
         if not re.fullmatch(r"[0-9]+(?:[.,][0-9]+)?", result["Precio2"]):
-            errors[4] = "falta un precio 2 válido para el segundo rango"
+            errors[6] = "falta un precio 2 válido para el segundo rango"
     return result, errors
 
 
 def parsear_tabla_precios(texto):
-    """Admite el pegado anterior de 2 columnas y las nuevas tablas de 3 o 5."""
+    """Barra, inicial/final/precio de cada rango; admite 2, 4 o 7 columnas."""
     rows = list(csv.reader(io.StringIO(texto), delimiter="\t"))
     rows = [row for row in rows if any(cell.strip() for cell in row)]
-    headers = {"barra", "barra interna", "codigo barra interno", "codigo de barra interno", "codigo de barras", "codigobarrainterno"}
+    headers = {"barra", "barra interna", "codigo", "codigo barra interno", "codigo de barra interno", "codigo de barras", "codigobarrainterno"}
     if rows and _normalize_text(rows[0][0]) in headers:
         rows.pop(0)
     if not rows:
         raise ValueError("Copia primero las filas de Excel que quieres pegar.")
     width = max(map(len, rows))
-    if width not in (2, 3, 5) or any("\n" in cell or "\r" in cell for row in rows for cell in row):
-        raise ValueError("Copia 2, 3 o 5 columnas, con un producto por fila y sin saltos dentro de las celdas.")
+    if width not in (2, 4, 7) or any("\n" in cell or "\r" in cell for row in rows for cell in row):
+        raise ValueError("Copia 2, 4 o 7 columnas, con un producto por fila y sin saltos dentro de las celdas.")
     rows = [row + [""] * (width - len(row)) for row in rows]
     return rows
 
@@ -4576,13 +4580,13 @@ class TivendoWindow(ttk.Frame):
     def _build_stepB_paste(self):
         f = self.stepB = ttk.Frame(self, padding=16)
         _wizard_steps(f, 2, ("Listado", "Pegar precios", "Revisar y exportar"))
-        ttk.Label(f, text="Barra, rango y precio", style="Section.TLabel").pack(anchor="w")
-        ttk.Label(f, text="Un producto por línea. Rango: desde - hasta (ej. 1 - 2). Para kilos puedes usar 0,001 - 9999.",
+        ttk.Label(f, text="Configura cantidades y precios", style="Section.TLabel").pack(anchor="w")
+        ttk.Label(f, text="Un producto por línea. Escribe la cantidad inicial, la cantidad final y el precio en campos separados.",
                   style="Muted.TLabel").pack(anchor="w", pady=(3, 0))
 
         tools = ttk.Frame(f)
         tools.pack(fill="x", pady=(10, 0))
-        self.btn_pegar_precios = ttk.Button(tools, text="Pegar 3 columnas de Excel", command=self._pegar_tabla_precios,
+        self.btn_pegar_precios = ttk.Button(tools, text="Pegar 4 columnas de Excel", command=self._pegar_tabla_precios,
             style="Primary.TButton")
         self.btn_pegar_precios.pack(side="left")
         ttk.Button(tools, text="Probar con un ejemplo", command=self._ejemplo_precios).pack(side="left", padx=8)
@@ -4592,19 +4596,39 @@ class TivendoWindow(ttk.Frame):
             command=self._cambiar_ingreso_rangos).pack(side="left")
         ttk.Checkbutton(options, text="Activar segundo rango y precio", variable=self.enable_r2,
             command=self._toggle_r2, style="Toolbutton").pack(side="left", padx=(16, 0))
-        self.lbl_formato_precios = ttk.Label(f, text="", style="Muted.TLabel")
+        self.lbl_formato_precios = ttk.Label(f, text="", style="Muted.TLabel", wraplength=850)
         self.lbl_formato_precios.pack(anchor="w", pady=(6, 0))
         self.lbl_pegado_precios = ttk.Label(f, text="Pega una barra interna y su precio nuevo en cada fila.", style="Muted.TLabel")
         self.lbl_pegado_precios.pack(anchor="w", pady=(6, 0))
 
-        cont = ttk.Frame(f); cont.pack(fill="both", expand=True, pady=12)
-        self._columnas_pegado_precios = []
-        for attribute, title in (("txt_cod", "Barra interna"), ("txt_rango1", "Rango 1 · ej. 1 - 2"),
-                ("txt_prec", "Precio 1"), ("txt_rango2", "Rango 2 · ej. 3 - 9999"), ("txt_prec2", "Precio 2")):
-            shell = ttk.Frame(cont)
-            text = _paste_text_column(shell, title)
-            setattr(self, attribute, text)
-            self._columnas_pegado_precios.append(shell)
+        cont = self._contenedor_pegado = ttk.Frame(f)
+        cont.pack(fill="both", expand=True, pady=12)
+        cont.rowconfigure(0, weight=1)
+        self._bloques_pegado_precios = []
+        self._campos_pegado_precios = []
+        groups = (("Artículo", "Un producto por línea", (("txt_cod", "Barra interna"),)),
+                  ("Rango 1", "Cantidad inicial a final · Precio", (("txt_ri1", "Rango inicial 1"),
+                       ("txt_rf1", "Rango final 1"), ("txt_prec", "Precio 1"))),
+                  ("Rango 2", "Cantidad inicial a final · Precio", (("txt_ri2", "Rango inicial 2"),
+                       ("txt_rf2", "Rango final 2"), ("txt_prec2", "Precio 2"))))
+        for column, (title, hint, fields) in enumerate(groups):
+            panel = ttk.Frame(cont, style="Card.TFrame", padding=10)
+            panel.columnconfigure(0, weight=1)
+            panel.rowconfigure(2, weight=1)
+            panel.grid(row=0, column=column, sticky="nsew", padx=(0, 10) if column < 2 else 0)
+            ttk.Label(panel, text=title, style="Card.Section.TLabel").grid(row=0, column=0, sticky="w")
+            ttk.Label(panel, text=hint, style="Card.Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(4, 8))
+            body = ttk.Frame(panel, style="Card.TFrame")
+            body.grid(row=2, column=0, sticky="nsew")
+            body.rowconfigure(0, weight=1)
+            for field_column, (attribute, label) in enumerate(fields):
+                body.columnconfigure(field_column, weight=1)
+                shell = ttk.Frame(body, style="Card.TFrame")
+                shell.grid(row=0, column=field_column, sticky="nsew", padx=(0, 6) if field_column < len(fields) - 1 else 0)
+                text = _paste_text_column(shell, label, label_style="Card.Muted.TLabel")
+                setattr(self, attribute, text)
+                self._campos_pegado_precios.append(shell)
+            self._bloques_pegado_precios.append(panel)
 
         bar = ttk.Frame(f); bar.pack(fill="x")
         ttk.Button(bar, text="Limpiar", command=self._limpiar_pegado_precios).pack(side="left")
@@ -4624,24 +4648,29 @@ class TivendoWindow(ttk.Frame):
         self._configurar_columnas_pegado()
 
     def _textos_precios(self):
-        return self.txt_cod, self.txt_rango1, self.txt_prec, self.txt_rango2, self.txt_prec2
+        return self.txt_cod, self.txt_ri1, self.txt_rf1, self.txt_prec, self.txt_ri2, self.txt_rf2, self.txt_prec2
 
     def _configurar_columnas_pegado(self):
         # Los campos ocultos conservan el texto, pero nunca participan en la exportación.
         if self.enable_r2.get():
             self.ingresar_rangos.set(True)
-        indices = [0, 1, 2] if self.ingresar_rangos.get() else [0, 2]
+        for index in (1, 2):
+            shell = self._campos_pegado_precios[index]
+            shell.grid() if self.ingresar_rangos.get() else shell.grid_remove()
+            shell.master.columnconfigure(index - 1, weight=1 if self.ingresar_rangos.get() else 0)
+        self._contenedor_pegado.columnconfigure(0, weight=2)
+        self._contenedor_pegado.columnconfigure(1, weight=4)
+        self._contenedor_pegado.columnconfigure(2, weight=4 if self.enable_r2.get() else 0)
+        second = self._bloques_pegado_precios[2]
+        second.grid() if self.enable_r2.get() else second.grid_remove()
+        width = 7 if self.enable_r2.get() else 4 if self.ingresar_rangos.get() else 2
+        self.btn_pegar_precios.config(text=f"Pegar {width} columnas de Excel")
+        format_text = "Ejemplo por producto: inicial 1, final 1, precio 590. Para kilos: inicial 0,001, final 9999."
         if self.enable_r2.get():
-            indices += [3, 4]
-        for shell in self._columnas_pegado_precios:
-            shell.pack_forget()
-        for index in indices:
-            self._columnas_pegado_precios[index].pack(side="left", fill="both", expand=True, padx=(0, 8))
-        self.btn_pegar_precios.config(text=f"Pegar {len(indices)} columnas de Excel")
-        format_text = "Barra | Rango 1 | Precio 1 | Rango 2 | Precio 2" if self.enable_r2.get() else (
-            "Barra | Rango 1 | Precio 1" if self.ingresar_rangos.get() else "Barra | Precio (rango: 1 - 9999)")
-        if self.enable_r2.get():
-            format_text += ". Sin segundo rango: deja sus dos campos vacíos."
+            format_text = "Rango 1: inicial 1, final 1, precio 590. Rango 2: inicial 2, final 3, precio 450."
+            format_text += " Sin rango 2: deja sus tres campos vacíos."
+        elif not self.ingresar_rangos.get():
+            format_text = "Solo barra y precio. Se usará rango inicial 1 = 1 y rango final 1 = 9999."
         self.lbl_formato_precios.config(text=format_text)
         self._actualizar_pegado_precios()
 
@@ -4653,9 +4682,9 @@ class TivendoWindow(ttk.Frame):
     def _leer_filas_precios(self):
         columns = [widget.get("1.0", "end-1c").splitlines() for widget in self._textos_precios()]
         if not self.ingresar_rangos.get():
-            columns[1] = []
+            columns[1] = columns[2] = []
         if not self.enable_r2.get():
-            columns[3] = columns[4] = []
+            columns[4] = columns[5] = columns[6] = []
         rows = []
         for index in range(max(map(len, columns), default=0)):
             values = [column[index].strip() if index < len(column) else "" for column in columns]
@@ -4665,7 +4694,7 @@ class TivendoWindow(ttk.Frame):
 
     def _read_pasted_lists(self):
         rows = self._leer_filas_precios()
-        return [values[0] for _, values in rows], [clean_price(values[2]) for _, values in rows]
+        return [values[0] for _, values in rows], [clean_price(values[3]) for _, values in rows]
 
     def _al_editar_precios(self, event):
         if event.widget.edit_modified():
@@ -4702,16 +4731,16 @@ class TivendoWindow(ttk.Frame):
         self._actualizar_pegado_precios()
 
     def _escribir_tabla_precios(self, rows, ejemplo=False):
-        width = max(map(len, rows), default=3)
-        if width not in (2, 3, 5):
-            raise ValueError("La tabla debe tener 2, 3 o 5 columnas.")
+        width = max(map(len, rows), default=4)
+        if width not in (2, 4, 7):
+            raise ValueError("La tabla debe tener 2, 4 o 7 columnas.")
         self._modo_ejemplo_precios = ejemplo
         self.ingresar_rangos.set(width != 2)
-        self.enable_r2.set(width == 5)
+        self.enable_r2.set(width == 7)
         normalized = []
         for row in rows:
             row = list(row) + [""] * (width - len(row))
-            normalized.append([row[0], "", row[1], "", ""] if width == 2 else row + [""] * (5 - width))
+            normalized.append([row[0], "", "", row[1], "", "", ""] if width == 2 else row + [""] * (7 - width))
         for index, widget in enumerate(self._textos_precios()):
             widget.delete("1.0", "end")
             widget.insert("1.0", "\n".join(row[index] for row in normalized))
@@ -4733,7 +4762,7 @@ class TivendoWindow(ttk.Frame):
                     return
             self._escribir_tabla_precios(rows)
         except (ValueError, tk.TclError) as exc:
-            messagebox.showwarning("Cómo pegar desde Excel", f"{exc}\n\nBarra | Rango 1 | Precio 1\nCon segundo rango: añade Rango 2 | Precio 2.\nTambién se admite el formato anterior: Barra | Precio.")
+            messagebox.showwarning("Cómo pegar desde Excel", f"{exc}\n\nBarra | Rango inicial 1 | Rango final 1 | Precio 1\nCon segundo rango: añade Rango inicial 2 | Rango final 2 | Precio 2.\nTambién se admite Barra | Precio.")
 
     def _ejemplo_precios(self):
         if self.df_map is None or self.df_map.empty:
@@ -4744,8 +4773,8 @@ class TivendoWindow(ttk.Frame):
                 return
         sample = self.df_map[self.df_map["CodigoBarraInterno"].ne("") &
                              ~self.df_map["Nombre"].map(_normalize_text).str.match(r"^no\s+disponible\b")].head(2)
-        rows = [[row.CodigoBarraInterno, "1 - 2", "1290", "3 - 9999", "990"]
-                if self.enable_r2.get() else [row.CodigoBarraInterno, "1 - 9999", "1290"]
+        rows = [[row.CodigoBarraInterno, "1", "1", "590", "2", "3", "450"]
+                if self.enable_r2.get() else [row.CodigoBarraInterno, "1", "9999", "1290"]
                 if self.ingresar_rangos.get() else [row.CodigoBarraInterno, "1290"] for row in sample.itertuples()]
         self._escribir_tabla_precios(rows, ejemplo=True)
 
@@ -4815,8 +4844,8 @@ class TivendoWindow(ttk.Frame):
                 "Precio2","RangoInicial2","RangoFinal2","RangoExistente")
         self.columns = cols
         self.tree = ttk.Treeview(body, columns=cols, show="headings", height=22, selectmode="extended")
-        widths = (100, 265, 150, 100, 90, 90, 100, 90, 90, 195)
-        headings = ("Código", "Artículo", "Barra interna", "Precio nuevo", "Desde", "Hasta", "Precio 2", "Desde 2", "Hasta 2", "¿Tiene otro rango?")
+        widths = (100, 265, 150, 100, 125, 125, 100, 125, 125, 195)
+        headings = ("Código", "Artículo", "Barra interna", "Precio 1", "Rango inicial 1", "Rango final 1", "Precio 2", "Rango inicial 2", "Rango final 2", "¿Tiene otro rango?")
         for c,w in zip(cols, widths):
             self.tree.heading(c, text=headings[cols.index(c)])
             self.tree.column(c, width=w, minwidth=180 if c == "Nombre" else 80, stretch=c == "Nombre", anchor="w")
@@ -4934,7 +4963,7 @@ class TivendoWindow(ttk.Frame):
     def _toggle_r2(self, initial=False):
         if self.enable_r2.get():
             self.ingresar_rangos.set(True)
-        if hasattr(self, "_columnas_pegado_precios"):
+        if hasattr(self, "_bloques_pegado_precios"):
             self._configurar_columnas_pegado()
         if hasattr(self, "var_opciones_rangos"):
             self._toggle_opciones_rangos()
@@ -5154,10 +5183,7 @@ class TivendoWindow(ttk.Frame):
         # Revalidar también lo editado en la tabla. Un segundo rango desactivado
         # nunca se exporta aunque conserve datos ocultos para volver a activarlo.
         for line, (index, row) in enumerate(ok.iterrows(), 1):
-            range2_values = [str(row[c]).strip() for c in ("RangoInicial2", "RangoFinal2", "Precio2")]
-            range2 = f"{range2_values[0]} - {range2_values[1]}" if any(range2_values) else ""
-            values = [row["Código"], f"{row['RangoInicial1']} - {row['RangoFinal1']}",
-                      row["Precio1"], range2, row["Precio2"]]
+            values = [row[column] for column in output_cols]
             checked, errors = preparar_fila_precio(values, con_rangos=True, con_rango2=self.enable_r2.get())
             # Si se eligió incluir no encontrados, se conserva la política anterior
             # de permitir el código vacío, sin omitir la validación de rangos/precios.

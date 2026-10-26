@@ -61,9 +61,11 @@ En **Cambios masivos de precios** se usa el listado de artículos guardado para 
 
 La revisión muestra el artículo y el precio nuevo que ingresó la persona. Los rangos opcionales permiten preparar las cantidades y el segundo precio de la importación. No se consulta ni compara un precio actual del catálogo. El Excel para Tivendo conserva sus siete columnas y exporta solo los datos preparados.
 
-En el paso **Pegar precios** se ingresa **Barra | Rango 1 | Precio 1**, un producto por línea. Cada rango se escribe como `1 - 2` o `0,001 - 9999` para cantidades decimales. **Activar segundo rango y precio** habilita las dos columnas adicionales: **Rango 2 | Precio 2**. Si un producto no tiene segundo rango, se dejan vacíos ambos campos. Los rangos no pueden superponerse. Al desactivar el segundo rango, sus datos no se exportan.
+En el paso **Pegar precios** se ingresa **Barra | Rango inicial 1 | Rango final 1 | Precio 1**, un producto por línea. Cantidades y precio se agrupan por rango, tomando como referencia el diálogo de Tivendo. Cada cantidad tiene su campo: por ejemplo inicial `1`, final `1`, precio `590`. Para kilos se admite una cantidad como `0,001`.
 
-El pegado desde Excel admite 3 o 5 columnas y conserva el formato anterior de 2 columnas (**Barra | Precio**), que usa el rango `1 - 9999`. También se puede desmarcar **Ingresar rango 1** para trabajar de esa forma. La vista previa muestra los rangos ingresados junto a sus precios; vuelve a validarlos antes de guardar el Excel.
+**Activar segundo rango y precio** muestra un segundo bloque con **Rango inicial 2 | Rango final 2 | Precio 2**. Por ejemplo inicial `2`, final `3`, precio `450`. Si un producto no tiene segundo rango, sus tres campos se dejan vacíos. Los rangos no pueden superponerse. Al desactivar el segundo bloque, sus datos no se exportan.
+
+El pegado desde Excel admite 4 o 7 columnas, en el mismo orden de los campos. La primera columna contiene la barra interna que el programa usa para encontrar el código del artículo. Se conserva el formato de 2 columnas (**Barra | Precio**), que usa inicial `1` y final `9999`. La vista previa identifica también cada campo como **Rango inicial 1**, **Rango final 1**, **Precio 1**, etc. El archivo generado mantiene las siete columnas de Tivendo (`Código`, `RangoInicial1`, `RangoFinal1`, `Precio1`, `RangoInicial2`, `RangoFinal2`, `Precio2`).
 
 ## Comprobación y límites
 
