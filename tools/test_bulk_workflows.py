@@ -65,13 +65,15 @@ class SecuenciaTests(unittest.TestCase):
             metadata = Path(directory) / "ultima.json"
             articles = Path(directory) / "articulos.xlsx"
             with mock.patch.object(app, "AUTO_LAST_LOAD_PATH", metadata):
-                app.save_auto_last_load(articles, Path(directory) / "packs.xlsx", Path(directory) / "precios.xlsx")
+                app.save_resource_load("packs", Path(directory) / "packs.xlsx")
+                app.save_resource_load("precios", Path(directory) / "precios.xlsx")
                 old = app.load_auto_last_load()
-                app.save_auto_articles_load(articles)
+                app.save_resource_load("articulos", articles)
                 new = app.load_auto_last_load()
                 self.assertEqual(new["packs"], old["packs"])
                 self.assertEqual(new["precios"], old["precios"])
-                self.assertEqual(new["downloaded_at"], old["downloaded_at"])
+                self.assertEqual(new["packs_downloaded_at"], old["packs_downloaded_at"])
+                self.assertEqual(new["precios_downloaded_at"], old["precios_downloaded_at"])
                 self.assertNotIn("sin fecha", app.article_download_label(articles))
                 self.assertIn("sin fecha", app.article_download_label(Path(directory) / "otro.xlsx"))
 

@@ -2,6 +2,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from tools.test_price_changes import app, fixture, Var, Widget
@@ -208,12 +209,44 @@ class PriceRangePasteTests(unittest.TestCase):
 
     def test_reemplazar_una_columna_no_toca_las_otras(self):
         view = paste_view([['00123','1','1000','1290'], ['00456','1','1000','1990']])
-        view.clipboard_get = lambda: '1490\n2490'
+        view.txt_prec.tag_add('sel', '1.0', 'end-1c')
+        view.clipboard_get = lambda: '1490'
         view._pegar_columna_precio(3)
         self.assertEqual(view.txt_cod.text, '00123\n00456')
         self.assertEqual(view.txt_ri1.text, '1\n1')
         self.assertEqual(view.txt_rf1.text, '1000\n1000')
-        self.assertEqual(view.txt_prec.text, '1490\n2490')
+        self.assertEqual(view._read_pasted_lists(), (['00123', '00456'], ['1490', '']))
+
+    def test_enter_y_segundo_pegado_conservan_barras_precios_y_rangos_previos(self):
+        view = paste_view([])
+        for index, widget, first, second in (
+            (0, view.txt_cod, '00123\n00456', '00789\n00011'),
+            (3, view.txt_prec, '1290\n1990', '2990\n990'),
+        ):
+            view.clipboard_get = lambda: first
+            view._pegar_columna_precio(index)
+            self.assertEqual(widget.index('insert'), widget.index('2.end'))
+            view._bajar_fila_precio(SimpleNamespace(widget=widget))
+            view.clipboard_get = lambda: second
+            view._pegar_columna_precio(index)
+        self.assertEqual(view._read_pasted_lists(),
+                         (['00123', '00456', '00789', '00011'], ['1290', '1990', '2990', '990']))
+        self.assertEqual(view.txt_ri1.text, '1\n1\n1\n1')
+        self.assertEqual(view.txt_rf1.text, '1000\n1000\n1000\n1000')
+        self.assertTrue(view._actualizar_pegado_precios())
+
+    def test_pegar_en_fila_intermedia_del_segundo_rango_no_desplaza_las_demas(self):
+        view = paste_view([
+            ['00123', '1', '2', '1290', '3', '1000', '990'],
+            ['00456', '1', '2', '1990', '3', '1000', ''],
+            ['00789', '1', '2', '2990', '3', '1000', '2490'],
+        ])
+        view.txt_prec2.mark_set('insert', '1.end')
+        view._bajar_fila_precio(SimpleNamespace(widget=view.txt_prec2))
+        view.clipboard_get = lambda: '1490'
+        view._pegar_columna_precio(6)
+        self.assertEqual(view.txt_prec2.text, '990\n1490\n2490')
+        self.assertTrue(view._actualizar_pegado_precios())
 
     def test_habilitar_rangos_rellena_las_diez_filas_y_pueden_pegarse_por_separado(self):
         view = paste_view([[f'00{i}', '1290'] for i in range(10)])

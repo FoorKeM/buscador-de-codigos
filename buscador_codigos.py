@@ -83,6 +83,7 @@ from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Dict, List, Optional
+from urllib.parse import urlsplit
 
 import tkinter as tk
 import tkinter.font as tkfont
@@ -103,7 +104,7 @@ _RE_CODE_TOKEN = re.compile(r"[a-z0-9-]{3,}")  # valida cada trozo de codigo (le
 
 STRIPE_COLOR = "#F3F6FA"
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v152"
+APP_VERSION  = "v159"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -177,7 +178,9 @@ def _configure_home_ui(style):
     style.configure("HomeDataInner.TFrame", background="#FFFFFF")
     style.configure("HomeDataTitle.TLabel", background="#FFFFFF", foreground=UI["ink"],
                     font=("Segoe UI", 12, "bold"))
+    style.configure("HomeData.TCheckbutton", background="#FFFFFF")
     for name, color in (("Success", UI["success"]), ("Warning", UI["warning"]),
+                        ("Active", UI["primary"]), ("Danger", UI["danger"]),
                         ("Muted", UI["muted"])):
         style.configure(f"HomeData{name}.TLabel", background="#FFFFFF", foreground=color)
     tones = {
@@ -470,11 +473,18 @@ try:
 except Exception:
     pass
 AUTO_DOWNLOAD_DIR = APP_DATA_DIR / "auto_downloads"
-AUTO_DOWNLOAD_STAGING_DIR = APP_DATA_DIR / "auto_downloads_tmp"
 AUTO_CREDENTIALS_PATH = APP_DATA_DIR / "credenciales_auto.json"
 DEFAULT_TIVENDO_USUARIO = "sistemamercadohouse@gmail.com"
 AUTO_LAST_LOAD_PATH = APP_DATA_DIR / "ultima_carga_automatica.json"
 AUTO_DIAG_DIR = APP_DATA_DIR / "diagnosticos_auto"
+ERP_ARTICULOS_URL = "https://erp.defontana.com/#/Inventario/Inventario/Articulos"
+ERP_DASHBOARD_URL = "https://erp.defontana.com/#/dashboard"
+DATA_SOURCES = {
+    "articulos": "Listado de artículos",
+    "packs": "Maestro de packs",
+    "precios": "Lista de precios y rangos",
+    "proveedores": "Proveedores",
+}
 MERCADOHOUSE_SYNC_DATA_DIR = Path(os.getenv("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")) / "MercadohouseSync"
 MERCADOHOUSE_SYNC_CONFIG_PATH = MERCADOHOUSE_SYNC_DATA_DIR / "config_sucursal.json"
 AUTO_SYNC_SUCURSALES = {
@@ -538,7 +548,8 @@ def _remember_base_db_cache(listado_path: Path) -> None:
     _save_base_db_cache_meta(meta)
 
 
-EMP_PATH = HERE / "empresas.json"
+EMP_PATH = APP_DATA_DIR / "empresas.json"
+LEGACY_EMP_PATH = HERE / "empresas.json"
 JOIN_SEP = "\n"
 
 def load_prefs() -> dict:
@@ -594,35 +605,15 @@ def load_auto_last_load() -> dict:
         pass
     return {}
 
-def save_auto_last_load(articulos: Path, packs: Path, precios: Path):
-    try:
-        AUTO_LAST_LOAD_PATH.parent.mkdir(parents=True, exist_ok=True)
-        data = {
-            "downloaded_at": datetime.now().isoformat(timespec="seconds"),
-            "articulos_downloaded_at": datetime.now().isoformat(timespec="seconds"),
-            "precios_downloaded_at": datetime.now().isoformat(timespec="seconds"),
-            "articulos": str(Path(articulos)),
-            "packs": str(Path(packs)),
-            "precios": str(Path(precios)),
-        }
-        with open(AUTO_LAST_LOAD_PATH, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
-
-def save_auto_articles_load(articulos: Path):
-    """Actualiza solo el listado y su fecha; conserva packs y precios."""
+def save_resource_load(key: str, path: Path):
+    """Guarda la ruta y fecha de esta fuente sin alterar las otras."""
     data = load_auto_last_load()
-    data.update(articulos=str(Path(articulos)),
-                articulos_downloaded_at=datetime.now().isoformat(timespec="seconds"))
-    AUTO_LAST_LOAD_PATH.parent.mkdir(parents=True, exist_ok=True)
-    pending = AUTO_LAST_LOAD_PATH.with_suffix(".json.tmp")
-    with open(pending, "w", encoding="utf-8") as file:
-        json.dump(data, file, ensure_ascii=False, indent=2)
-    pending.replace(AUTO_LAST_LOAD_PATH)
+    data[key] = str(path.resolve())
+    data[f"{key}_downloaded_at"] = datetime.now().isoformat(timespec="seconds")
+    _save_json_atomic(AUTO_LAST_LOAD_PATH, data)
 
 
-def _resource_download_label(key, path) -> str:
+def _resource_download_label(key, path, *, fallback="sin fecha registrada (archivo manual)") -> str:
     data = load_auto_last_load()
     try:
         if path and Path(data.get(key, "")).resolve() == Path(path).resolve():
@@ -631,7 +622,7 @@ def _resource_download_label(key, path) -> str:
                 return date
     except (OSError, ValueError):
         pass
-    return "sin fecha registrada (archivo manual)"
+    return fallback
 
 
 def article_download_label(path) -> str:
@@ -681,24 +672,14 @@ def _reasonable_root_geometry(root, saved_geometry: str = "") -> str:
 class AutoDownloadError(Exception):
     pass
 
+class ArticleMasterNotReady(AutoDownloadError):
+    """Defontana abrió el ERP, pero no llegó al Maestro de Artículos."""
+
 class TivendoLoginError(AutoDownloadError):
     """Fallo especificamente al iniciar sesion en Tivendo (usuario/clave
     incorrectos), para poder distinguirlo de otros errores de descarga y
     mostrar un mensaje mas claro + permitir volver a pedir la contraseña."""
     pass
-
-def _clean_auto_download_dir(download_dir: Path = AUTO_DOWNLOAD_DIR) -> int:
-    download_dir = Path(download_dir)
-    download_dir.mkdir(parents=True, exist_ok=True)
-    deleted = 0
-    for path in download_dir.iterdir():
-        if path.is_file():
-            try:
-                path.unlink()
-                deleted += 1
-            except Exception:
-                pass
-    return deleted
 
 def _auto_active_price_list_name() -> str:
     key = AUTO_SYNC_DEFAULT_SUCURSAL
@@ -712,16 +693,12 @@ def _auto_active_price_list_name() -> str:
         pass
     return AUTO_SYNC_SUCURSALES.get(key, AUTO_SYNC_SUCURSALES[AUTO_SYNC_DEFAULT_SUCURSAL])
 
-def _promote_auto_downloads(paths: dict) -> dict:
+def _save_downloaded_source(key: str, source: Path) -> Path:
     AUTO_DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    _clean_auto_download_dir(AUTO_DOWNLOAD_DIR)
-    promoted = {}
-    for key, src in paths.items():
-        src_path = Path(src)
-        dst_path = AUTO_DOWNLOAD_DIR / src_path.name
-        shutil.move(str(src_path), str(dst_path))
-        promoted[key] = dst_path
-    return promoted
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    target = AUTO_DOWNLOAD_DIR / f"{key}_{stamp}{source.suffix.lower()}"
+    shutil.move(str(source), str(target))
+    return target
 
 def _auto_log_path() -> Path:
     AUTO_DIAG_DIR.mkdir(parents=True, exist_ok=True)
@@ -887,9 +864,11 @@ async def _auto_read_company(page) -> str:
             continue
     return ""
 
-async def _auto_ensure_mercado_house(page, usuario: str, password: str):
+async def _auto_ensure_mercado_house(page, usuario: str, password: str, *, require_confirmation=False):
     company = await _auto_read_company(page)
     if not company:
+        if require_confirmation:
+            raise AutoDownloadError("No se pudo confirmar que la sesión esté en Mercado House.")
         _auto_log("No se pudo leer empresa activa; se continúa de todas formas")
         return
     if "MERCADO HOUSE" in company:
@@ -988,35 +967,47 @@ async def _auto_download_from_pos(pos_page, section_name: str, fallback_name: st
         raise AutoDownloadError(f"No se encontró el archivo descargado: {target}")
     return target
 
-async def _auto_wait_erp_open(page):
-    limit = asyncio.get_event_loop().time() + 45
-    while asyncio.get_event_loop().time() < limit:
-        for text in ("Ecosistema Digital", "Clientes y Productos", "Listado de Documentos"):
+async def _auto_open_erp(context, page, *, direct_url=ERP_DASHBOARD_URL):
+    """Sigue la sesión hasta el ERP, aunque el portal abra otra pestaña."""
+    old_pages = set(context.pages) - {page}
+    clicked = set()
+    tried_direct = False
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    ready_text = re.compile(r"^(Inventario|Ventas|Clientes y Productos|Listado de Documentos|Categor[ií]as)$", re.I)
+    while loop.time() - started < 45:
+        for candidate in reversed(context.pages):
+            if candidate in old_pages or candidate.is_closed():
+                continue
+            host = urlsplit(candidate.url).hostname
             try:
-                if await page.get_by_text(text, exact=True).count() > 0:
-                    return
+                if host == "erp.defontana.com" and await candidate.get_by_text(ready_text).count():
+                    return candidate
+                if host in {"portal.defontana.com", "tivendoapp.defontana.com"} and candidate not in clicked:
+                    title = candidate.get_by_text("ERP Digital", exact=True).filter(visible=True).last
+                    if await title.is_visible():
+                        clicked.add(candidate)
+                        card = title.locator(
+                            "xpath=ancestor-or-self::*[self::a or self::button or self::mat-card "
+                            "or @role='button' or @tabindex='0' "
+                            "or contains(concat(' ', normalize-space(@class), ' '), ' mat-card ') "
+                            "or contains(concat(' ', normalize-space(@class), ' '), ' mat-mdc-card ')][1]")
+                        await (card if await card.count() else title).click(timeout=4000)
             except Exception:
-                pass
+                # La pestaña puede cerrarse o navegar al completar la autenticación.
+                continue
 
-        try:
-            in_portal = "portal.defontana.com/dashboard" in page.url
-            erp_card = page.get_by_text("ERP Digital", exact=True).last
-            if in_portal and await erp_card.count() > 0:
-                await erp_card.click()
-        except Exception:
-            pass
-        await _auto_pause(0.5)
+        if not tried_direct and loop.time() - started >= 12:
+            tried_direct = True
+            _auto_log("ERP sigue en el portal; intentando abrir la ruta directa con la misma sesión")
+            fallback = await context.new_page()
+            try:
+                await fallback.goto(direct_url, wait_until="commit", timeout=10000)
+            except Exception:
+                pass  # Una redirección puede interrumpir goto y continuar en otra pestaña.
+        await _auto_pause(0.4)
 
-    raise AutoDownloadError(f"ERP Digital no terminó de abrir. URL actual: {page.url}")
-
-async def _auto_open_erp(context, page):
-    erp_page = await _auto_click_capture_page(
-        context,
-        page,
-        page.get_by_text("ERP Digital", exact=True).last,
-    )
-    await _auto_wait_erp_open(erp_page)
-    return erp_page
+    raise AutoDownloadError("El portal de Defontana no abrió ERP Digital. Revisa que tu usuario tenga acceso al módulo.")
 
 async def _auto_click_classic_sales_report(page):
     exact_links = page.get_by_role("link", name="Informes de Ventas", exact=True)
@@ -1186,9 +1177,7 @@ async def _auto_wait_price_export_download(erp_page, rframe):
             if not task.done():
                 task.cancel()
 
-async def _auto_download_price_ranges(context, page, download_dir: Path) -> Path:
-    erp_page = await _auto_open_erp(context, page)
-
+async def _auto_download_price_ranges(erp_page, download_dir: Path) -> Path:
     await erp_page.locator("text=Ventas").first.click()
     await _auto_pause(0.2)
     sales_items = erp_page.locator("text=Ventas")
@@ -1252,164 +1241,294 @@ async def _auto_download_price_ranges(context, page, download_dir: Path) -> Path
         raise AutoDownloadError(f"No se encontró la lista de precios descargada: {target}")
     return target
 
-async def auto_download_articulos_packs_y_precios(usuario: str, password: str, progress_cb=None) -> dict:
-    def progress(text: str):
-        _auto_log(text)
-        if progress_cb:
-            progress_cb(text)
-
-    progress("Preparando descarga temporal...")
-    _clean_auto_download_dir(AUTO_DOWNLOAD_STAGING_DIR)
-
-    try:
-        from playwright.async_api import async_playwright
-    except Exception as exc:
-        raise AutoDownloadError(
-            "Falta instalar Playwright para usar la carga automática.\n"
-            "Instala la dependencia o usa el .exe portable actualizado."
-        ) from exc
-
-    browser = None
-    try:
-        async with async_playwright() as p:
-            progress("Abriendo navegador automático...")
-            browser, context, page = await _auto_new_page(p, AUTO_DOWNLOAD_STAGING_DIR)
-
-            progress("Iniciando sesión en Tivendo...")
-            await _auto_login_tivendo(page, usuario, password)
-
-            progress("Verificando empresa Mercado House...")
-            await _auto_ensure_mercado_house(page, usuario, password)
-
-            progress("Abriendo Punto de Ventas...")
-            pos_page = await _auto_open_pos(context, page)
-
-            progress("Descargando listado de artículos...")
-            articulos_path = await _auto_download_from_pos(
-                pos_page,
-                "Listado de artículos",
-                "listado_articulos.xlsx",
-                AUTO_DOWNLOAD_STAGING_DIR,
-            )
-
-            progress("Descargando maestro de packs...")
-            packs_path = await _auto_download_from_pos(
-                pos_page,
-                "Packs",
-                "packs.xlsx",
-                AUTO_DOWNLOAD_STAGING_DIR,
-            )
-
-            progress("Descargando lista de precios...")
-            prices_path = await _auto_download_price_ranges(context, page, AUTO_DOWNLOAD_STAGING_DIR)
-
-            progress("Guardando última descarga correcta...")
-            return _promote_auto_downloads({
-                "articulos": articulos_path,
-                "packs": packs_path,
-                "precios": prices_path,
-            })
-    except AutoDownloadError:
-        raise
-    except Exception as exc:
-        raise AutoDownloadError(str(exc)) from exc
-    finally:
-        if browser is not None:
-            try:
-                await browser.close()
-            except Exception:
-                pass
-
-
-async def auto_download_solo_articulos(usuario: str, password: str, progress_cb=None):
-    """Valida la descarga antes de reemplazar solo el listado compartido."""
-    try:
-        from playwright.async_api import async_playwright
-    except ImportError as exc:
-        raise AutoDownloadError("Usa el ejecutable actualizado para descargar el listado automáticamente.") from exc
-
+async def auto_download_sources(usuario: str, password: str, keys, progress_cb=None, *,
+                                on_start=None, on_result=None):
+    """Descarga y valida las fuentes elegidas, en orden y con la misma sesión."""
     def progress(text):
         _auto_log(text)
         if progress_cb:
             progress_cb(text)
 
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError as exc:
+        raise AutoDownloadError("Usa el ejecutable actualizado para descargar los datos automáticamente.") from exc
+
+    loaded, errors = {}, {}
     APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="listado-", dir=APP_DATA_DIR) as staging:
+    with tempfile.TemporaryDirectory(prefix="descarga-", dir=APP_DATA_DIR) as folder:
+        staging = Path(folder)
         async with async_playwright() as playwright:
-            progress("Iniciando sesión en Tivendo…")
-            browser, context, page = await _auto_new_page(playwright, Path(staging))
+            browser, context, page = await _auto_new_page(playwright, staging)
             try:
+                progress("Iniciando sesión en Tivendo…")
                 await _auto_login_tivendo(page, usuario, password)
-                await _auto_ensure_mercado_house(page, usuario, password)
-                progress("Descargando solo el listado de artículos…")
-                pos = await _auto_open_pos(context, page)
-                source = await _auto_download_from_pos(pos, "Listado de artículos", "listado_articulos.xlsx", Path(staging))
-                progress("Comprobando el listado y el último código válido…")
-                catalogo = leer_catalogo_articulos(source)
-                AUTO_DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
-                # Ruta nueva: el listado anterior sigue disponible si después
-                # no se puede guardar la metadata o aplicar el cambio en la UI.
-                stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                target = AUTO_DOWNLOAD_DIR / (f"listado_articulos_{stamp}" + source.suffix.lower())
-                pending = target.with_suffix(target.suffix + ".part")
-                shutil.copy2(source, pending)
-                pending.replace(target)
-                return target, catalogo
+                provider_error = None
+                try:
+                    await _auto_ensure_mercado_house(page, usuario, password,
+                                                    require_confirmation="proveedores" in keys)
+                except AutoDownloadError as exc:
+                    if "proveedores" not in keys or len(keys) == 1:
+                        raise
+                    await _auto_ensure_mercado_house(page, usuario, password)
+                    provider_error = exc
+
+                pos = erp = None
+                for key in keys:
+                    if on_start:
+                        on_start(key)
+                    try:
+                        if key in {"articulos", "packs"}:
+                            if pos is None:
+                                progress("Abriendo Punto de Ventas…")
+                                pos = await _auto_open_pos(context, page)
+                            progress(f"Descargando {DATA_SOURCES[key].lower()}…")
+                            section = "Packs" if key == "packs" else "Listado de artículos"
+                            source = await _auto_download_from_pos(pos, section, f"{key}.xlsx", staging)
+                            parsed = load_packs_data(source) if key == "packs" else leer_catalogo_articulos(source)
+                            result = (_save_downloaded_source(key, source), parsed)
+                        else:
+                            if key == "proveedores" and provider_error is not None:
+                                raise provider_error
+                            if erp is None:
+                                progress("Abriendo ERP Digital de Defontana…")
+                                erp = await _auto_open_erp(context, page)
+                            if key == "precios":
+                                progress("Descargando lista de precios y rangos…")
+                                source = await _auto_download_price_ranges(erp, staging)
+                                parsed = load_price_ranges_data(source)
+                                result = (_save_downloaded_source(key, source), parsed)
+                            else:
+                                result = await _auto_download_provider_categories(erp, staging, progress)
+                    except Exception as exc:
+                        errors[key] = exc
+                    else:
+                        loaded[key] = result
+                    if on_result:
+                        on_result(key, loaded.get(key), errors.get(key))
             finally:
                 try:
                     await browser.close()
                 except Exception as exc:
-                    _auto_log(f"No se pudo cerrar el navegador de descarga: {exc}")
+                    _auto_log(f"No se pudo cerrar el navegador de descarga: {type(exc).__name__}")
+    return loaded, errors
+
+
+async def auto_download_solo_articulos(usuario: str, password: str, progress_cb=None):
+    loaded, errors = await auto_download_sources(usuario, password, ("articulos",), progress_cb)
+    if errors:
+        raise errors["articulos"]
+    return loaded["articulos"]
 
 
 # =====================================================
 #  Proveedores (empresas) — persistencia
 # =====================================================
+def leer_proveedores_defontana(path: Path) -> Dict[int, str]:
+    """Lee el catálogo de Categorías sin mezclarlo con la lista anterior."""
+    try:
+        df = pd.read_excel(path, sheet_name="data", dtype=str, keep_default_na=False, engine="openpyxl")
+    except Exception as exc:
+        raise ValueError("No se pudo leer el Excel. Usa el archivo de Categorías de Defontana.") from exc
+    df.columns = [_normalize_text(column).replace(" ", "") for column in df.columns]
+    columns = ["codigo", "nombre", "codigopadre", "nivel"]
+    if not df.columns.is_unique or not set(columns).issubset(df.columns):
+        raise ValueError("El archivo debe tener las columnas código, nombre, códigoPadre y nivel del Excel de Categorías.")
+
+    data = {}
+    for line, (code, name, parent, level) in enumerate(df[columns].itertuples(index=False, name=None), start=2):
+        if not any(value.strip() for value in (code, name, parent, level)):
+            continue
+        code = code.strip()
+        if not re.fullmatch(r"[0-9]+", code) or not name.strip():
+            raise ValueError(f"Fila {line}: se necesita un código entero y un nombre.")
+        supplier_id = int(code)
+        if supplier_id in data:
+            raise ValueError(f"Fila {line}: el código {code} está repetido.")
+        data[supplier_id] = name
+    if not data:
+        raise ValueError("El Excel de Categorías está vacío.")
+    return data
+
+
+async def auto_download_proveedores(usuario: str, password: str, progress_cb) -> Dict[int, str]:
+    loaded, errors = await auto_download_sources(usuario, password, ("proveedores",), progress_cb)
+    if errors:
+        raise errors["proveedores"]
+    return loaded["proveedores"]
+
+
+async def _auto_download_provider_categories(erp_page, staging, progress):
+    progress("Abriendo ERP Digital → Inventario → Artículos…")
+    erp_page.on("requestfailed", _auto_log_provider_navigation_failure)
+    await erp_page.set_viewport_size({"width": 1920, "height": 960})
+    await _auto_open_article_master(erp_page)
+    progress("Esperando la descarga de Categorías en Resultados…")
+    try:
+        export = await _auto_find_category_export(erp_page)
+    except ArticleMasterNotReady:
+        progress("El Maestro de Artículos no cargó. Reintentando en la misma sesión (2 de 2)…")
+        await erp_page.reload(wait_until="domcontentloaded", timeout=30000)
+        await _auto_open_article_master(erp_page)
+        progress("Esperando Categorías en el segundo intento…")
+        export = await _auto_find_category_export(erp_page)
+    progress("Descargando el Excel de Categorías…")
+    try:
+        async with erp_page.expect_download(timeout=90000) as download_info:
+            await export.click(timeout=15000)
+    finally:
+        await export.dispose()
+    download = await download_info.value
+    target = staging / "categorias.xlsx"
+    await download.save_as(str(target))
+    progress("Comprobando el Excel de Categorías…")
+    return leer_proveedores_defontana(target)
+
+
+def _auto_log_provider_navigation_failure(request):
+    if not request.is_navigation_request():
+        return
+    host = urlsplit(request.url).hostname
+    failure = request.failure or ""
+    if host and host.endswith(".defontana.com") and re.fullmatch(r"net::ERR_[A-Z0-9_]+", failure):
+        _auto_log(f"Categorías ERP: no se pudo navegar a {host} ({failure})")
+
+
+async def _auto_open_article_master(page):
+    route = urlsplit(ERP_ARTICULOS_URL).fragment
+    def at_article_master(url):
+        current = urlsplit(url)
+        return current.hostname == "erp.defontana.com" and current.fragment.split("?", 1)[0] == route
+
+    if at_article_master(page.url):
+        return
+    article_link = page.locator(f'a[href$="#{route}"]:visible').first
+    try:
+        if not await article_link.is_visible():
+            inventory = page.get_by_text("Inventario", exact=True).filter(visible=True).first
+            if await inventory.is_visible():
+                await inventory.click(timeout=4000)
+                await article_link.wait_for(state="visible", timeout=5000)
+        if await article_link.is_visible():
+            await article_link.click(timeout=4000)
+            await page.wait_for_url(at_article_master, timeout=6000)
+            return
+    except Exception:
+        pass  # El enlace puede ocultarse mientras se actualiza el menú lateral.
+    await page.goto(ERP_ARTICULOS_URL, wait_until="domcontentloaded", timeout=30000)
+
+
+_CATEGORY_EXPORT_CONTROL = r"""
+() => {
+    const normalize = text => (text || "").normalize("NFD")
+        .replace(/[\u0300-\u036f\u200b-\u200f\ufeff]/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+    const visible = element => element.getClientRects().length > 0 &&
+        getComputedStyle(element).visibility === "visible";
+    const icons = "mat-icon, i, svg, [aria-hidden='true']";
+    const label = element => {
+        const copy = element.cloneNode(true);
+        copy.querySelectorAll(icons).forEach(icon => icon.remove());
+        return [copy.textContent, element.getAttribute("aria-label"), element.getAttribute("title")].map(normalize);
+    };
+    const headings = Array.from(document.querySelectorAll("h1,h2,h3,h4,h5,h6,[role=heading],div,span,strong,p"));
+    const hasHeading = name => headings.some(element => normalize(element.textContent) === name && visible(element));
+    const master = hasHeading("maestro de articulos");
+    const results = hasHeading("resultados");
+    const actions = Array.from(document.querySelectorAll("button,a,[role=button]")).filter(visible);
+    const clear = actions.filter(element => label(element).includes("limpiar"));
+    const categories = actions.filter(element => label(element).some(value => value === "categorias" || value === "categoria") &&
+        !element.closest("[aria-haspopup],[aria-expanded],[role=combobox],mat-select,[data-bs-toggle=dropdown]"));
+    const scored = [];
+    for (const action of categories) {
+        const bounds = action.getBoundingClientRect();
+        const nextToClear = clear.some(reset => {
+            const left = reset.getBoundingClientRect();
+            return Math.abs((bounds.top + bounds.bottom) - (left.top + left.bottom)) <= 24 &&
+                bounds.left >= left.right - 4 && bounds.left - left.right <= 100;
+        });
+        const downloadIcon = /download|descarg|save_alt|get_app|arrow[_ -]?downward/i.test(action.outerHTML);
+        const score = (nextToClear ? 2 : 0) + (downloadIcon ? 1 : 0);
+        if (score && (master || results)) scored.push({action, score});
+    }
+    scored.sort((a, b) => b.score - a.score);
+    const target = scored.length && (scored.length === 1 || scored[0].score > scored[1].score)
+        ? scored[0].action : null;
+    return {target, details: {master, results, clear: clear.length, categories: categories.length}};
+}
+"""
+
+
+async def _auto_find_category_export(erp_page):
+    """El Maestro de Artículos vive dentro del iframe main del ERP."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 30
+    seen = {}
+    while loop.time() < deadline:
+        if erp_page.is_closed():
+            raise AutoDownloadError("Se cerró el navegador antes de abrir la descarga de Categorías.")
+        for frame in sorted(erp_page.frames, key=lambda frame: frame.name != "main"):
+            try:
+                result = await frame.evaluate_handle(_CATEGORY_EXPORT_CONTROL)
+                try:
+                    target = await result.get_property("target")
+                    export = target.as_element()
+                    if export is not None:
+                        return export
+                    await target.dispose()
+                    details = await result.get_property("details")
+                    try:
+                        seen[frame] = await details.json_value()
+                    finally:
+                        await details.dispose()
+                finally:
+                    await result.dispose()
+            except Exception:
+                continue  # El ERP puede sustituir el iframe mientras lo carga.
+        await _auto_pause(0.3)
+    screens = [{"host": urlsplit(frame.url).hostname, "main": frame.name == "main", **info}
+               for frame, info in seen.items()]
+    _auto_log(f"Categorías ERP: diagnóstico de pantallas {screens}")
+    if any(info["master"] or (info["results"] and info["clear"])
+           for frame, info in seen.items() if frame in erp_page.frames):
+        raise AutoDownloadError("El ERP abrió Artículos, pero no identificó la descarga de Categorías junto a Limpiar en Resultados.")
+    raise ArticleMasterNotReady("El ERP no terminó de mostrar el Maestro de Artículos. Comprueba el acceso a Inventario → Artículos.")
+
+
 def load_empresas() -> Dict[int, str]:
     """
     Carga proveedores desde empresas.json.
-    Si no existe/está vacío, inicializa con SEED_EMPRESAS y lo guarda.
+    Usa la semilla solo como respaldo si no hay una lista válida.
     """
     data: Dict[int, str] = {}
-    if EMP_PATH.exists():
+    path = EMP_PATH if EMP_PATH.is_file() else LEGACY_EMP_PATH
+    if path.is_file():
         try:
-            with open(EMP_PATH, "r", encoding="utf-8") as _f:
+            with open(path, "r", encoding="utf-8") as _f:
                 raw = json.load(_f)
             data = {int(k): str(v) for k, v in raw.items() if str(k).lstrip("-").isdigit()}
         except Exception:
             data = {}
     if data:
         return data
-    # Semilla del programa
-    try:
-        with open(EMP_PATH, "w", encoding="utf-8") as _f:
-            json.dump(SEED_EMPRESAS, _f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
     return dict(SEED_EMPRESAS)
 
 def save_empresas(d: Dict[int, str]):
-    clean = {int(k): str(v).strip() for k, v in d.items() if str(k).lstrip("-").isdigit()}
-    try:
-        with open(EMP_PATH, "w", encoding="utf-8") as _f:
-            json.dump(clean, _f, ensure_ascii=False, indent=2)
-    except OSError:
-        pass
+    """Reemplaza la lista solo cuando el JSON nuevo se escribió completo."""
+    _save_json_atomic(EMP_PATH, d)
 
-def ensure_empresas_seed_applied() -> None:
-    """Garantiza que empresas.json tenga, al menos, todas las empresas de SEED_EMPRESAS.
 
-    - Si el archivo no existe o está vacío, se inicializa con la semilla.
-    - Si existe, se fusiona manteniendo las empresas que el usuario haya agregado,
-      pero asegurando que todas las de SEED_EMPRESAS estén presentes y actualizadas.
-    El valor de retorno es None; el efecto es escribir el JSON a disco.
-    """
+def _save_json_atomic(path: Path, data: dict):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
     try:
-        actuales = load_empresas()
-    except Exception:
-        actuales = {}
-    fusionadas: Dict[int, str] = {**SEED_EMPRESAS, **actuales}
-    save_empresas(fusionadas)
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=path.stem + "-", suffix=".tmp", delete=False) as file:
+            temporary = Path(file.name)
+            json.dump(data, file, ensure_ascii=False, indent=2)
+        temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 def empresas_df_for_excel(d: Dict[int, str]) -> pd.DataFrame:
     rows = [f"{name} (Id. {iid})" for iid, name in sorted(d.items(), key=lambda x: (str(x[1]).lower(), x[0]))]
@@ -2309,14 +2428,9 @@ class StartView(ttk.Frame):
         on_manage_prov,
         on_open_tivendo,
         on_open_ingreso_masivo,
-        on_load_listado,
-        on_load_packs,
-        on_load_ranges,
+        on_load_file,
+        on_update_source,
         on_auto_load,
-        listado_cargado: bool,
-        packs_cargado: bool,
-        ranges_cargado: bool,
-        auto_last_load_text: str = "",
     ):
         super().__init__(master, style="Home.TFrame")
         self.master.title("Herramientas — MERCADO HOUSE")
@@ -2326,11 +2440,13 @@ class StartView(ttk.Frame):
         footer = ttk.Frame(self, style="Home.TFrame")
         footer.pack(side="bottom", fill="x", padx=18, pady=(7, 12))
         ttk.Label(footer, text=f"Versión {APP_VERSION}", style="HomeMuted.TLabel").pack(side="right")
-        self.btn_cargar_auto = ttk.Button(footer, text="Cargar automáticamente desde Tivendo",
-                                          command=on_auto_load, style="HomeTeal.TButton")
+        self.btn_cargar_auto = ttk.Button(footer, text="Actualizar todos los datos",
+                                          command=lambda: on_auto_load(self.selected_sources()),
+                                          style="HomeTeal.TButton")
         self.btn_cargar_auto.pack(side="left")
-        self.lbl_estado_auto = ttk.Label(footer, text="", style="HomeMuted.TLabel")
-        self.lbl_estado_auto.pack(side="left", padx=14)
+        self.update_controls = [self.btn_cargar_auto]
+        self.update_in_progress = False
+        self.article_loaded = False
 
         header = ttk.Frame(self, style="HomeHero.TFrame", padding=(0, 8))
         header.pack(fill="x", padx=18, pady=(12, 9))
@@ -2344,112 +2460,155 @@ class StartView(ttk.Frame):
 
         tasks = ttk.Frame(self, style="Home.TFrame")
         tasks.pack(fill="x", padx=18)
-        tasks.columnconfigure(0, weight=1, uniform="tasks")
-        tasks.columnconfigure(1, weight=1, uniform="tasks")
+        for col in range(3):
+            tasks.columnconfigure(col, weight=1, uniform="tasks")
 
-        def task(row, col, tone, title, command):
+        def task(col, tone, title, command):
             card = ttk.Frame(tasks, style=f"Home{tone}.TFrame", padding=7)
-            card.grid(row=row, column=col, sticky="nsew", padx=(0, 7) if col == 0 else (7, 0), pady=4)
+            card.grid(row=0, column=col, sticky="nsew", padx=(0, 6) if col < 2 else 0, pady=4)
             button = ttk.Button(card, text=title, command=command,
                                 style=f"Home{tone}.TButton")
             button.pack(fill="x")
+            self.update_controls.append(button)
             return button
 
-        self.btn_buscar = task(0, 0, "Blue", "Buscar códigos", on_choose_db)
-        self.btn_prov = task(0, 1, "Purple", "Proveedores", on_manage_prov)
-        self.btn_tivendo = task(1, 0, "Coral", "Cambios masivos de precios", on_open_tivendo)
-        self.btn_ingreso = task(1, 1, "Teal", "Ingreso masivo de artículos", on_open_ingreso_masivo)
+        self.btn_buscar = task(0, "Blue", "Buscar códigos", on_choose_db)
+        task(1, "Coral", "Cambios masivos de precios", on_open_tivendo)
+        task(2, "Teal", "Ingreso masivo de artículos", on_open_ingreso_masivo)
 
         sources = ttk.Frame(self, style="HomeData.TFrame", padding=(14, 8))
         sources.pack(fill="x", padx=18, pady=(9, 0))
-        sources.columnconfigure(0, weight=1)
+        sources.columnconfigure(2, weight=1)
         ttk.Label(sources, text="Datos cargados", style="HomeDataTitle.TLabel").grid(
-            row=0, column=0, sticky="w", pady=(0, 4))
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        ttk.Label(sources, text="Marca qué actualizar en grupo.",
+                  style="HomeDataMuted.TLabel").grid(row=0, column=2, sticky="w", padx=(12, 0))
+        mark_all = ttk.Button(sources, text="Marcar todas", command=self.mark_all_sources)
+        mark_all.grid(row=0, column=5, sticky="e", pady=(0, 4))
+        self.update_controls.append(mark_all)
 
-        def source(row, title, command):
-            line = ttk.Frame(sources, style="HomeDataInner.TFrame")
-            line.grid(row=row + 1, column=0, sticky="ew", pady=2)
-            line.columnconfigure(0, weight=1)
-            label = ttk.Label(line, text=title, style="HomeDataMuted.TLabel")
-            label.grid(row=0, column=0, sticky="w")
-            button = ttk.Button(line, text="Elegir archivo", command=command)
-            button.grid(row=0, column=1, padx=(8, 0))
-            return label, button
+        selected = load_prefs().get("update_sources")
+        if not isinstance(selected, list):
+            selected = DATA_SOURCES
+        self.source_selection = {}
+        self.source_labels = {}
+        for row, (key, title) in enumerate(DATA_SOURCES.items(), start=1):
+            choice = tk.BooleanVar(master=self, value=key in selected)
+            self.source_selection[key] = choice
+            select = ttk.Checkbutton(sources, text=title, variable=choice, style="HomeData.TCheckbutton",
+                                     command=self.save_source_selection)
+            select.grid(row=row, column=0, sticky="w", pady=2)
+            label = ttk.Label(sources, width=13, style="HomeDataMuted.TLabel")
+            label.grid(row=row, column=1, sticky="w", padx=(8, 0), pady=2)
+            date = ttk.Label(sources, style="HomeDataMuted.TLabel")
+            date.grid(row=row, column=2, sticky="w", padx=(12, 4))
+            self.source_labels[key] = label, date
+            if key == "proveedores":
+                listing = ttk.Button(sources, text="Ver lista", width=8, command=on_manage_prov)
+                listing.grid(row=row, column=3)
+                self.update_controls.append(listing)
+            choose = ttk.Button(sources, text="Elegir archivo", command=lambda key=key: on_load_file(key))
+            choose.grid(row=row, column=4, padx=(8, 0), pady=2)
+            update = ttk.Button(sources, text="Actualizar", command=lambda key=key: on_update_source(key))
+            update.grid(row=row, column=5, padx=(8, 0), pady=2)
+            self.update_controls.extend((select, choose, update))
+        self.refresh_batch_button()
 
-        self.lbl_estado, self.btn_cargar_listado = source(0, "Listado de artículos", on_load_listado)
-        self.lbl_estado_packs, self.btn_cargar_packs = source(1, "Maestro de packs", on_load_packs)
-        self.lbl_estado_rangos, self.btn_cargar_rangos = source(2, "Lista de precios", on_load_ranges)
+        self.update_panel = ttk.Frame(self, style="HomeData.TFrame", padding=(14, 10))
+        self.update_title = ttk.Label(self.update_panel, style="HomeDataTitle.TLabel")
+        self.update_title.pack(anchor="w")
+        self.update_status = ttk.Label(self.update_panel, style="HomeDataMuted.TLabel", wraplength=830, justify="left")
+        self.update_status.pack(fill="x", pady=(4, 0))
+        self.update_bar = ttk.Progressbar(self.update_panel, mode="indeterminate")
 
-        self.set_listado_cargado(listado_cargado)
-        self.set_packs_cargado(packs_cargado)
-        self.set_ranges_cargado(ranges_cargado)
-        self.set_auto_last_load(auto_last_load_text)
+    def selected_sources(self):
+        return tuple(key for key, choice in self.source_selection.items() if choice.get())
 
-    @staticmethod
-    def _estado_texto(cargado: bool) -> str:
-        return ("Listado de artículos · Listo" if cargado
-                else "Listado de artículos · Falta cargar (necesario para buscar y usar Tivendo)")
+    def refresh_batch_button(self):
+        count = len(self.selected_sources())
+        title = "Actualizar todos los datos" if count == len(DATA_SOURCES) else "Actualizar seleccionados"
+        self.btn_cargar_auto.config(text=title, state="normal" if count else "disabled")
 
-    def set_listado_cargado(self, cargado: bool):
-        """Habilita/deshabilita los botones que necesitan el listado de artículos
-        y actualiza el texto de estado en pantalla."""
-        state_dep = "normal" if cargado else "disabled"
-        self.btn_buscar.config(state=state_dep)
-        self.btn_tivendo.config(state="normal")
-        self.btn_ingreso.config(state="normal")
-        try:
-            self.lbl_estado.config(text=self._estado_texto(cargado),
-                                   style="HomeDataSuccess.TLabel" if cargado else "HomeDataWarning.TLabel")
-        except Exception:
-            pass
+    def save_source_selection(self):
+        prefs = load_prefs()
+        prefs["update_sources"] = list(self.selected_sources())
+        save_prefs(prefs)
+        self.refresh_batch_button()
 
-    @staticmethod
-    def _estado_packs_texto(cargado: bool) -> str:
-        return ("Maestro de packs · Listo" if cargado
-                else "Maestro de packs · Opcional, permite ver packs vinculados")
+    def mark_all_sources(self):
+        for choice in self.source_selection.values():
+            choice.set(True)
+        self.save_source_selection()
 
-    def set_packs_cargado(self, cargado: bool):
-        try:
-            self.lbl_estado_packs.config(text=self._estado_packs_texto(cargado),
-                                         style="HomeDataSuccess.TLabel" if cargado else "HomeDataMuted.TLabel")
-        except Exception:
-            pass
+    def begin_source_update(self, title, keys, *, batch=False):
+        self.update_in_progress = True
+        for key in DATA_SOURCES:
+            if key in keys:
+                self.set_source_status(key, "Esperando")
+            elif batch:
+                self.set_source_status(key, "Omitido")
+        self.update_panel.pack(fill="x", padx=18, pady=(12, 0))
+        self.update_title.config(text=title)
+        self.update_status.config(text="Preparando…", style="HomeDataMuted.TLabel")
+        self.update_bar.pack(fill="x", pady=(8, 0))
+        self.update_bar.start(10)
+        self.update_enabled = [button for button in self.update_controls if not button.instate(("disabled",))]
+        for button in self.update_enabled:
+            button.state(("disabled",))
 
-    @staticmethod
-    def _estado_rangos_texto(cargado: bool) -> str:
-        return ("Lista de precios y rangos · Lista" if cargado
-                else "Lista de precios y rangos · Opcional")
+    def report_source_update(self, text):
+        self.update_status.config(text=text)
 
-    def set_ranges_cargado(self, cargado: bool):
-        try:
-            self.lbl_estado_rangos.config(text=self._estado_rangos_texto(cargado),
-                                          style="HomeDataSuccess.TLabel" if cargado else "HomeDataMuted.TLabel")
-        except Exception:
-            pass
+    def finish_source_update(self, title, text, warning=False):
+        self.update_bar.stop()
+        self.update_bar.pack_forget()
+        self.update_title.config(text=title)
+        self.update_status.config(text=text, style="HomeDataWarning.TLabel" if warning else "HomeDataSuccess.TLabel")
+        for button in self.update_enabled:
+            button.state(("!disabled",))
+        self.update_in_progress = False
+        self.btn_buscar.config(state="normal" if self.article_loaded else "disabled")
+        self.refresh_batch_button()
 
-    def set_auto_last_load(self, texto: str):
-        try:
-            if texto:
-                self.lbl_estado_auto.config(text=f"Listado descargado: {texto}")
-            else:
-                self.lbl_estado_auto.config(text="Listado descargado: sin registro")
-        except Exception:
-            pass
+    def set_source_status(self, key, status):
+        label, _ = self.source_labels[key]
+        color = {"Listo": "Success", "Actualizando": "Active", "Error": "Danger"}.get(status, "Muted")
+        label.config(text=status, style=f"HomeData{color}.TLabel")
+
+    def set_source_state(self, key, loaded, date):
+        self.set_source_status(key, "Listo" if loaded else "Sin cargar")
+        _, date_label = self.source_labels[key]
+        date_label.config(text=f"Última actualización: {date}" if date else "Última actualización: sin registro")
+        if key == "articulos":
+            self.article_loaded = loaded
+            if not self.update_in_progress:
+                self.btn_buscar.config(state="normal" if loaded else "disabled")
 
 class ProvidersView(ttk.Frame):
-    """CRUD de proveedores (sin importar desde Excel)."""
+    """Consulta el catálogo de proveedores y lo actualiza desde Defontana."""
     def __init__(self, master, go_home_cb):
         super().__init__(master)
         self.master.title("Administrar proveedores")
         self.pack(fill="both", expand=True, padx=16, pady=14)
         self.go_home_cb = go_home_cb
-        self.data: Dict[int,str] = load_empresas()
+        self.data = load_empresas()
 
         top = ttk.Frame(self); top.pack(fill="x")
-        ttk.Button(top, text="← Inicio", command=self._back_home).pack(side="left")
+        self.btn_back = ttk.Button(top, text="← Inicio", command=self.go_home_cb)
+        self.btn_back.pack(side="left")
         ttk.Label(top, text="Proveedores", style="Title.TLabel").pack(side="left", padx=16)
-        ttk.Label(self, text="Selecciona un proveedor para editarlo, o pulsa Nuevo para agregar uno.",
+        ttk.Label(self, text="Actualiza la lista completa desde Categorías de Defontana.",
                   style="Muted.TLabel").pack(anchor="w", pady=(5, 0))
+
+        footer = ttk.Frame(self)
+        footer.pack(side="bottom", fill="x", pady=(6, 0))
+        self.btn_sync = ttk.Button(footer, text="Sincronizar desde Defontana", command=self._sync_proveedores,
+                                   style="Primary.TButton")
+        self.btn_sync.pack(side="left")
+        self.btn_import = ttk.Button(footer, text="Cargar Excel manualmente", command=self._importar_proveedores)
+        self.btn_import.pack(side="left", padx=8)
+        self.status = ttk.Label(footer, text=f"{len(self.data)} proveedores", style="Muted.TLabel")
+        self.status.pack(side="left", padx=6)
 
         mid = ttk.Frame(self); mid.pack(fill="both", expand=True, pady=8)
         self.tree = ttk.Treeview(mid, columns=("id","nombre"), show="headings", selectmode="browse", height=20)
@@ -2457,85 +2616,75 @@ class ProvidersView(ttk.Frame):
         self.tree.heading("nombre", text="Nombre"); self.tree.column("nombre", width=520, anchor="w")
         vsb = ttk.Scrollbar(mid, orient="vertical", command=self.tree.yview); self.tree.configure(yscroll=vsb.set)
         self.tree.pack(side="left", fill="both", expand=True); vsb.pack(side="right", fill="y")
-        self.tree.bind("<<TreeviewSelect>>", self.on_select)
-
-        form = ttk.LabelFrame(self, text="Datos del proveedor"); form.pack(fill="x", pady=6)
-        row = ttk.Frame(form); row.pack(fill="x", pady=4, padx=8)
-        ttk.Label(row, text="Id:").pack(side="left")
-        self.ent_id = ttk.Entry(row, width=12); self.ent_id.pack(side="left", padx=(4,10))
-        ttk.Label(row, text="Nombre:").pack(side="left")
-        self.ent_nombre = ttk.Entry(row); self.ent_nombre.pack(side="left", fill="x", expand=True, padx=(4,10))
-
-        actions = ttk.Frame(form); actions.pack(fill="x", pady=4, padx=8)
-        ttk.Button(actions, text="Guardar proveedor", command=self.save_item,
-                   style="Primary.TButton").pack(side="left", padx=4)
-        ttk.Button(actions, text="Nuevo", command=self.clear_form).pack(side="left", padx=4)
-        ttk.Button(actions, text="Eliminar", command=self.delete_item).pack(side="left", padx=4)
-
-        self.status = ttk.Label(self, text="", style="Success.TLabel")
-        # El formulario debe seguir visible cuando la tabla se contrae en
-        # ventanas pequeñas; reservar su espacio antes de expandir la tabla.
-        mid.pack_forget()
-        form.pack_forget()
-        self.status.pack(side="bottom", fill="x", pady=(4, 0))
-        form.pack(side="bottom", fill="x", pady=6)
-        mid.pack(side="top", fill="both", expand=True, pady=8)
         self.reload()
-
-    def _back_home(self):
-        save_empresas(self.data)
-        self.destroy()
-        self.go_home_cb()
 
     def reload(self):
         for x in self.tree.get_children():
             self.tree.delete(x)
         for iid, name in sorted(self.data.items(), key=lambda x: x[0]):
             self.tree.insert("", "end", values=(iid, name))
-        self.clear_form()
 
-    def on_select(self, event):
-        sel = self.tree.selection()
-        if not sel:
+    def _sync_proveedores(self):
+        credentials = self.master._ask_auto_credentials()
+        if not credentials:
             return
-        iid, name = self.tree.item(sel[0], "values")
-        self.ent_id.delete(0, "end"); self.ent_id.insert(0, str(iid))
-        self.ent_nombre.delete(0, "end"); self.ent_nombre.insert(0, str(name))
+        usuario, password = credentials
+        save_auto_credentials(usuario, password)
 
-    def clear_form(self):
-        self.ent_id.delete(0, "end"); self.ent_nombre.delete(0, "end")
-        self.tree.selection_remove(*self.tree.selection())
-        self.status.config(text="")
-
-    def save_item(self):
-        id_txt = self.ent_id.get().strip()
-        name = self.ent_nombre.get().strip()
-        if not id_txt.isdigit():
-            messagebox.showwarning("Atención", "El Id debe ser un número entero."); return
-        if not name:
-            messagebox.showwarning("Atención", "El nombre no puede estar vacío."); return
-        iid = int(id_txt)
-        exists = iid in self.data
-        self.data[iid] = name
-        save_empresas(self.data)
-        self.reload()
-        self.status.config(text=("Actualizado" if exists else "Agregado") + f": {name} (Id. {iid})")
-
-    def delete_item(self):
-        sel = self.tree.selection()
-        if not sel:
-            messagebox.showinfo("Info", "Selecciona un proveedor para eliminar."); return
-        iid, name = self.tree.item(sel[0], "values")
-        if messagebox.askyesno("Confirmar", f"¿Eliminar '{name}' (Id. {iid})?"):
+        def download(progress):
             try:
-                iid_int = int(iid)
-                if iid_int in self.data:
-                    del self.data[iid_int]
-                    save_empresas(self.data)
-                self.reload()
-                self.status.config(text=f"Eliminado: {name} (Id. {iid})")
+                return asyncio.run(auto_download_proveedores(usuario, password, progress))
+            except TivendoLoginError as exc:
+                save_auto_credentials(usuario, "")
+                raise AutoDownloadError("Revisa tu usuario y contraseña de Tivendo y vuelve a sincronizar.") from exc
+
+        self._actualizar_proveedores(download, "Defontana")
+
+    def _importar_proveedores(self):
+        path = filedialog.askopenfilename(title="Selecciona el Excel de Categorías de Defontana",
+                                          filetypes=[("Excel de Categorías", "*.xlsx")], parent=self)
+        if path:
+            self._actualizar_proveedores(lambda _progress: leer_proveedores_defontana(Path(path)), "Excel")
+
+    def _actualizar_proveedores(self, load, source):
+        buttons = (self.btn_back, self.btn_sync, self.btn_import)
+        for button in buttons:
+            button.config(state="disabled")
+        self.status.config(text="Preparando la actualización…", style="Muted.TLabel")
+
+        def progress(text):
+            self.after(0, lambda: self.status.config(text=text))
+
+        def apply(data=None, error=None):
+            if not self.winfo_exists():
+                return
+            for button in buttons:
+                button.config(state="normal")
+            if error is None:
+                try:
+                    save_empresas(data)
+                except OSError:
+                    error = "No se pudo guardar la lista. Comprueba que el programa tenga permiso para escribir en su carpeta."
+            if error is not None:
+                self.status.config(text=f"Se conservan {len(self.data)} proveedores", style="Warning.TLabel")
+                messagebox.showerror("No se actualizaron los proveedores", error, parent=self)
+                return
+            self.data = data
+            self.reload()
+            self.status.config(text=f"{len(data)} proveedores · {source}", style="Success.TLabel")
+
+        def worker():
+            try:
+                data = load(progress)
+            except (ValueError, AutoDownloadError) as exc:
+                self.after(0, lambda error=str(exc): apply(error=error))
             except Exception:
-                pass
+                self.after(0, lambda: apply(error="No se pudo obtener el Excel desde Defontana. "
+                    "Revisa tu conexión y el acceso a Inventario → Artículos, o carga el archivo manualmente."))
+            else:
+                self.after(0, lambda: apply(data=data))
+
+        threading.Thread(target=worker, daemon=True).start()
 
 class SearchView(ttk.Frame):
     """Buscador con barra superior para el botón Volver (no desplaza el contenido)."""
@@ -3648,7 +3797,6 @@ class RootApp(tk.Tk):
         self.ranges_index = {}
         self.auto_last_load_text = ""
 
-        ensure_empresas_seed_applied()  # Sincroniza empresas.json con la semilla y conserva agregados
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # La selección del LISTADO DE ARTÍCULOS ahora se hace desde el menú principal
@@ -3754,36 +3902,37 @@ class RootApp(tk.Tk):
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _choose_listado_inicial(self):
-        """Pide el Excel de LISTADO DE ARTÍCULOS y actualiza el estado de los botones."""
+    def _cargar_archivo_fuente(self, key):
         prefs = load_prefs()
-        path = filedialog.askopenfilename(
-            title="Selecciona el EXCEL de LISTADO DE ARTÍCULOS",
-            initialdir=prefs.get("last_dir"),
-            filetypes=[("Excel", "*.xlsm *.xlsx *.xls"), ("Todos los archivos", "*.*")],
+        filetypes = {
+            "articulos": [("Excel o CSV", "*.xlsx *.xls *.xlsm *.csv")],
+            "packs": [("Excel", "*.xlsx *.xls *.xlsm")],
+            "precios": [("Excel o HTML", "*.xlsx *.xls *.html *.htm")],
+            "proveedores": [("Excel de Categorías", "*.xlsx")],
+        }
+        selected = filedialog.askopenfilename(
+            title=f"Selecciona el archivo de {DATA_SOURCES[key].lower()}",
+            initialdir=prefs.get("last_dir"), filetypes=filetypes[key], parent=self,
         )
-        if path:
-            try:
-                p = Path(path)
-                self.listado_path = p
-                prefs["last_dir"] = str(p.parent)
-                save_prefs(prefs)
-            except Exception:
-                self.listado_path = None
-        else:
-            self.listado_path = None
-        if hasattr(self, "start_view") and self.start_view is not None:
-            try:
-                self.start_view.set_listado_cargado(self.listado_path is not None)
-                self.auto_last_load_text = article_download_label(self.listado_path) if self.listado_path else ""
-                self.start_view.set_auto_last_load(self.auto_last_load_text)
-            except Exception:
-                pass
-        if self.listado_path is not None:
-            messagebox.showinfo(
-                "Listado cargado",
-                f"Se cargó correctamente el LISTADO DE ARTICULOS.\n\nArchivo:\n{self.listado_path.name}"
-            )
+        if not selected:
+            return
+        path = Path(selected)
+        prefs["last_dir"] = str(path.parent)
+        save_prefs(prefs)
+        readers = {
+            "articulos": leer_catalogo_articulos,
+            "packs": load_packs_data,
+            "precios": load_price_ranges_data,
+            "proveedores": leer_proveedores_defontana,
+        }
+
+        def load(progress, started, _finished):
+            started(key)
+            progress(f"Leyendo {path.name}…")
+            parsed = readers[key](path)
+            return {key: parsed if key == "proveedores" else (path, parsed)}, {}
+
+        self._run_source_job((key,), load)
 
     def _ask_auto_credentials(self) -> Optional[tuple]:
         saved = load_auto_credentials()
@@ -3869,214 +4018,145 @@ class RootApp(tk.Tk):
         return result["value"]
 
     def _actualizar_solo_articulos(self, on_success):
-        if getattr(self, "_auto_load_busy", False):
-            messagebox.showinfo("Descarga en curso", "Espera a que termine la descarga actual.")
+        self._actualizar_fuentes(("articulos",), on_success=on_success)
+
+    def _actualizar_fuentes(self, keys, on_success=None, *, batch=False):
+        if not keys or getattr(self, "_auto_load_busy", False):
             return
         credentials = self._ask_auto_credentials()
         if not credentials:
             return
         usuario, password = credentials
         save_auto_credentials(usuario, password)
-        self._auto_load_busy = True
-        progress = tk.Toplevel(self)
-        progress.title("Actualizar listado de artículos")
-        progress.transient(self)
-        progress.resizable(False, False)
-        progress.protocol("WM_DELETE_WINDOW", lambda: None)
-        progress.grab_set()
-        box = ttk.Frame(progress, padding=20)
-        box.pack(fill="both", expand=True)
-        ttk.Label(box, text="Actualizando el listado", style="Section.TLabel").pack(anchor="w")
-        ttk.Label(box, text="El menú y este asistente usarán el mismo archivo.", style="Muted.TLabel").pack(anchor="w", pady=(4, 8))
-        status = tk.StringVar(value="Preparando descarga…")
-        ttk.Label(box, textvariable=status, wraplength=450).pack(anchor="w")
-        bar = ttk.Progressbar(box, mode="indeterminate", length=440)
-        bar.pack(fill="x", pady=(12, 0))
-        bar.start(10)
-        progress.update_idletasks()
-        x = self.winfo_rootx() + max(0, (self.winfo_width() - progress.winfo_width()) // 2)
-        y = self.winfo_rooty() + max(0, (self.winfo_height() - progress.winfo_height()) // 2)
-        progress.geometry(f"+{x}+{y}")
 
-        def worker():
-            error = None
-            result = None
+        def load(progress, started, finished):
             try:
-                result = asyncio.run(auto_download_solo_articulos(
-                    usuario, password, lambda text: self.after(0, lambda value=text: status.set(value))))
-                save_auto_articles_load(result[0])
-            except Exception as exc:
-                error = exc
-                _auto_log(f"Error al actualizar solo artículos: {exc}")
+                if keys == ("articulos",) and on_success is not None:
+                    started("articulos")
+                    result = asyncio.run(auto_download_solo_articulos(usuario, password, progress))
+                    return {"articulos": result}, {}
+                return asyncio.run(auto_download_sources(usuario, password, keys, progress,
+                                                         on_start=started, on_result=finished))
+            except TivendoLoginError as exc:
+                save_auto_credentials(usuario, "")
+                raise AutoDownloadError("No se pudo iniciar sesión en Tivendo. Revisa tu usuario y contraseña.") from exc
 
-            def apply():
+        self._run_source_job(keys, load, on_success, batch=batch)
+
+    def _aplicar_fuente(self, key, result):
+        if key == "proveedores":
+            save_empresas(result)
+            return
+        path, parsed = result
+        save_resource_load(key, path)
+        if key == "articulos":
+            self.listado_path = path
+            self.auto_last_load_text = article_download_label(path)
+        elif key == "packs":
+            self.packs_path = path
+            self.packs_df, self.packs_index = parsed
+        elif key == "precios":
+            self.ranges_path = path
+            self.ranges_df, self.ranges_index = parsed
+
+    def _run_source_job(self, keys, load, on_success=None, *, batch=False):
+        if getattr(self, "_auto_load_busy", False):
+            return
+        self._auto_load_busy = True
+        if batch:
+            title = "Actualizar todos los datos" if len(keys) == len(DATA_SOURCES) else "Actualizar seleccionados"
+        else:
+            title = f"Actualizar {DATA_SOURCES[keys[0]].lower()}"
+        home = self.start_view
+        if home is not None:
+            home.begin_source_update(title, keys, batch=batch)
+            set_status = home.report_source_update
+        else:
+            # Los asistentes conservan el diálogo mientras están en el paso del listado.
+            progress = tk.Toplevel(self)
+            progress.title(title)
+            progress.transient(self)
+            progress.resizable(False, False)
+            progress.protocol("WM_DELETE_WINDOW", lambda: None)
+            progress.grab_set()
+            box = ttk.Frame(progress, padding=20)
+            box.pack(fill="both", expand=True)
+            ttk.Label(box, text=title, style="Section.TLabel").pack(anchor="w")
+            status = tk.StringVar(value="Preparando…")
+            ttk.Label(box, textvariable=status, width=54, wraplength=420).pack(anchor="w", pady=(6, 10))
+            bar = ttk.Progressbar(box, mode="indeterminate", length=420)
+            bar.pack(fill="x")
+            bar.start(10)
+            set_status = status.set
+
+        def report(text):
+            self.after(0, lambda: set_status(text))
+
+        updated, errors = {}, {}
+
+        def started(key):
+            if home is not None:
+                self.after(0, lambda: home.set_source_status(key, "Actualizando"))
+
+        def apply_source(key, result, error):
+            if key in updated or key in errors:
+                return
+            if error is None:
+                try:
+                    self._aplicar_fuente(key, result)
+                except OSError:
+                    error = AutoDownloadError("No se pudo guardar la actualización en este equipo.")
+                else:
+                    updated[key] = result
+                    self._refresh_start_sources((key,))
+            if error is not None:
+                errors[key] = error
+                if home is not None:
+                    home.set_source_status(key, "Error")
+
+        def finished(key, result, error):
+            self.after(0, lambda: apply_source(key, result, error))
+
+        def apply(loaded, failures):
+            try:
+                for key in keys:
+                    if key in loaded or key in failures:
+                        apply_source(key, loaded.get(key), failures.get(key))
+            finally:
                 self._auto_load_busy = False
-                bar.stop()
-                progress.destroy()
-                if error is not None:
-                    if isinstance(error, TivendoLoginError):
-                        save_auto_credentials(usuario, "")
-                    messagebox.showerror("No se actualizó el listado",
-                        "Se conserva el listado que tenías cargado.\n\n" + str(error).split("Call log:", 1)[0].strip())
-                    return
-                self.listado_path = result[0]
-                self.auto_last_load_text = article_download_label(self.listado_path)
-                if self.start_view is not None:
-                    self.start_view.set_listado_cargado(True)
-                    self.start_view.set_auto_last_load(self.auto_last_load_text)
-                on_success(*result)
-            self.after(0, apply)
+                if home is None:
+                    bar.stop()
+                    progress.destroy()
 
-        threading.Thread(target=worker, daemon=True).start()
-
-
-    def _auto_load_articulos_packs(self):
-        if getattr(self, "_auto_load_busy", False):
-            messagebox.showinfo("Descarga en curso", "Espera a que termine la descarga actual.")
-            return
-        credentials = self._ask_auto_credentials()
-        if not credentials:
-            return
-        usuario, password = credentials
-        save_auto_credentials(usuario, password)
-
-        progress = tk.Toplevel(self)
-        self._auto_load_busy = True
-        progress.protocol("WM_DELETE_WINDOW", lambda: None)
-        progress.grab_set()
-        progress.title("Carga automática")
-        progress.configure(background=UI["background"])
-        progress.transient(self)
-        progress.resizable(False, False)
-        box = ttk.Frame(progress, padding=20)
-        box.pack(fill="both", expand=True)
-        ttk.Label(box, text="Descargando datos de Tivendo", style="Section.TLabel").pack(anchor="w")
-        ttk.Label(box, text="Artículos, packs y precios", style="Muted.TLabel").pack(anchor="w", pady=(4, 0))
-        status_var = tk.StringVar(value="Preparando...")
-        ttk.Label(box, textvariable=status_var, width=54, wraplength=420,
-                  style="Muted.TLabel").pack(anchor="w", pady=(10, 8))
-        pb = ttk.Progressbar(box, mode="indeterminate", length=360)
-        pb.pack(fill="x")
-        pb.start(10)
-        try:
-            progress.update_idletasks()
-            x = self.winfo_rootx() + max(0, (self.winfo_width() - progress.winfo_width()) // 2)
-            y = self.winfo_rooty() + max(0, (self.winfo_height() - progress.winfo_height()) // 2)
-            progress.geometry(f"+{x}+{y}")
-        except Exception:
-            pass
-
-        if hasattr(self, "start_view") and self.start_view is not None:
-            try:
-                self.start_view.btn_cargar_auto.config(state="disabled")
-            except Exception:
-                pass
-
-        def set_status(text: str):
-            try:
-                self.after(0, lambda: status_var.set(text))
-            except Exception:
-                pass
+            if errors:
+                by_reason = {}
+                for key, exc in errors.items():
+                    reason = str(exc).split("Call log:", 1)[0].strip() or type(exc).__name__
+                    by_reason.setdefault(reason, []).append(DATA_SOURCES[key])
+                lines = [f"{', '.join(sources)}: {reason}" for reason, sources in by_reason.items()]
+                if updated:
+                    success = ", ".join(DATA_SOURCES[key] for key in updated)
+                    lines.insert(0, f"Actualizado: {success}.")
+                lines.append("Las fuentes con error conservan sus datos anteriores.")
+                if home is not None:
+                    home.finish_source_update("Actualización incompleta", "\n".join(lines), warning=True)
+                else:
+                    messagebox.showwarning("Actualización incompleta", "\n".join(lines), parent=self)
+            elif home is not None or on_success is None:
+                success = ", ".join(DATA_SOURCES[key] for key in updated)
+                if home is not None:
+                    home.finish_source_update("Datos actualizados", success)
+                else:
+                    messagebox.showinfo("Datos actualizados", success, parent=self)
+            if on_success is not None and "articulos" in updated:
+                on_success(*updated["articulos"])
 
         def worker():
             try:
-                paths = asyncio.run(auto_download_articulos_packs_y_precios(usuario, password, set_status))
-                set_status("Procesando maestro de packs...")
-                packs_df, packs_index = _load_cached_side_data(Path(paths["packs"]), PACKS_CACHE_PATH, PACKS_CACHE_META, load_packs_data)
-                set_status("Procesando lista de precios...")
-                ranges_df, ranges_index = _load_cached_side_data(Path(paths["precios"]), RANGES_CACHE_PATH, RANGES_CACHE_META, load_price_ranges_data)
-                result = {
-                    "articulos": Path(paths["articulos"]),
-                    "packs": Path(paths["packs"]),
-                    "precios": Path(paths["precios"]),
-                    "packs_df": packs_df,
-                    "packs_index": packs_index,
-                    "ranges_df": ranges_df,
-                    "ranges_index": ranges_index,
-                }
-
-                def done():
-                    self._auto_load_busy = False
-                    try:
-                        pb.stop()
-                        progress.destroy()
-                    except Exception:
-                        pass
-
-                    self.listado_path = result["articulos"]
-                    self.packs_path = result["packs"]
-                    self.packs_df = result["packs_df"]
-                    self.packs_index = result["packs_index"]
-                    self.ranges_path = result["precios"]
-                    self.ranges_df = result["ranges_df"]
-                    self.ranges_index = result["ranges_index"]
-                    save_auto_last_load(self.listado_path, self.packs_path, self.ranges_path)
-                    self.auto_last_load_text = article_download_label(self.listado_path)
-
-                    prefs = load_prefs()
-                    prefs["last_dir"] = str(AUTO_DOWNLOAD_DIR)
-                    save_prefs(prefs)
-
-                    if hasattr(self, "start_view") and self.start_view is not None:
-                        try:
-                            self.start_view.set_listado_cargado(True)
-                            self.start_view.set_packs_cargado(True)
-                            self.start_view.set_ranges_cargado(True)
-                            self.start_view.set_auto_last_load(self.auto_last_load_text)
-                            self.start_view.btn_cargar_auto.config(state="normal")
-                        except Exception:
-                            pass
-
-                    messagebox.showinfo(
-                        "Carga automática lista",
-                        "Se descargaron y cargaron correctamente los archivos.\n\n"
-                        f"Listado: {self.listado_path.name}\n"
-                        f"Packs: {self.packs_path.name}\n"
-                        f"Lista de precios: {self.ranges_path.name}\n"
-                        f"Artículos con packs: {len(self.packs_index)}\n"
-                        f"Artículos con rangos: {len(self.ranges_index)}",
-                    )
-
-                self.after(0, done)
+                loaded, failures = load(report, started, finished)
             except Exception as exc:
-                err = str(exc)
-                _auto_log(f"Error en carga automática: {err}")
-                # El registro conserva el detalle de Playwright; el cuadro de
-                # diálogo solo muestra la causa, no cientos de líneas de reintentos.
-                err = err.split("Call log:", 1)[0].strip()
-                login_failed = isinstance(exc, TivendoLoginError)
-
-                def fail():
-                    self._auto_load_busy = False
-                    try:
-                        pb.stop()
-                        progress.destroy()
-                    except Exception:
-                        pass
-                    if hasattr(self, "start_view") and self.start_view is not None:
-                        try:
-                            self.start_view.btn_cargar_auto.config(state="normal")
-                        except Exception:
-                            pass
-                    if login_failed:
-                        # Borramos la contraseña guardada (mala) para que la
-                        # proxima vez _ask_auto_credentials() vuelva a pedirla
-                        # en vez de reintentar en silencio con la misma clave.
-                        save_auto_credentials(usuario, "")
-                        messagebox.showerror(
-                            "Fallo al iniciar sesión",
-                            "No se pudo iniciar sesión en Tivendo. Revisa la contraseña.\n\n"
-                            "La próxima vez que uses 'Cargar automático' se te pedirá que la ingreses de nuevo.",
-                        )
-                    else:
-                        messagebox.showerror(
-                            "Error en carga automática",
-                            "No se pudo completar la carga automática.\n"
-                            "No se cambió lo que ya estaba cargado.\n\n"
-                            f"Detalle: {err}",
-                        )
-
-                self.after(0, fail)
+                loaded, failures = {}, dict.fromkeys(keys, exc)
+            self.after(0, lambda: apply(loaded, failures))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -4084,84 +4164,6 @@ class RootApp(tk.Tk):
         for w in self.winfo_children():
             w.destroy()
         self.start_view = None  # evitar referencia colgante a widget destruido
-
-    def _choose_packs_inicial(self):
-        """Pide el Excel MAESTRO DE PACKS y lo deja disponible para el buscador."""
-        prefs = load_prefs()
-        path = filedialog.askopenfilename(
-            title="Selecciona el EXCEL MAESTRO DE PACKS",
-            initialdir=prefs.get("last_dir"),
-            filetypes=[("Excel", "*.xlsm *.xlsx *.xls"), ("Todos los archivos", "*.*")],
-        )
-        if not path:
-            return
-
-        try:
-            p = Path(path)
-            packs_df, packs_index = _load_cached_side_data(p, PACKS_CACHE_PATH, PACKS_CACHE_META, load_packs_data)
-            self.packs_path = p
-            self.packs_df = packs_df
-            self.packs_index = packs_index
-            prefs["last_dir"] = str(p.parent)
-            save_prefs(prefs)
-        except Exception as e:
-            self.packs_path = None
-            self.packs_df = None
-            self.packs_index = {}
-            messagebox.showerror("Error al cargar maestro de packs", str(e))
-            return
-
-        if hasattr(self, "start_view") and self.start_view is not None:
-            try:
-                self.start_view.set_packs_cargado(True)
-            except Exception:
-                pass
-
-        messagebox.showinfo(
-            "Maestro de packs cargado",
-            f"Se cargo correctamente el MAESTRO DE PACKS.\n\n"
-            f"Archivo: {self.packs_path.name}\n"
-            f"Articulos con packs: {len(self.packs_index)}",
-        )
-
-    def _choose_ranges_inicial(self):
-        """Pide el Excel/HTML LISTA DE PRECIOS y deja rangos disponibles."""
-        prefs = load_prefs()
-        path = filedialog.askopenfilename(
-            title="Selecciona la LISTA DE PRECIOS",
-            initialdir=prefs.get("last_dir"),
-            filetypes=[("Excel/HTML", "*.xls *.xlsx *.html *.htm"), ("Todos los archivos", "*.*")],
-        )
-        if not path:
-            return
-
-        try:
-            p = Path(path)
-            ranges_df, ranges_index = _load_cached_side_data(p, RANGES_CACHE_PATH, RANGES_CACHE_META, load_price_ranges_data)
-            self.ranges_path = p
-            self.ranges_df = ranges_df
-            self.ranges_index = ranges_index
-            prefs["last_dir"] = str(p.parent)
-            save_prefs(prefs)
-        except Exception as e:
-            self.ranges_path = None
-            self.ranges_df = None
-            self.ranges_index = {}
-            messagebox.showerror("Error al cargar lista de precios", str(e))
-            return
-
-        if hasattr(self, "start_view") and self.start_view is not None:
-            try:
-                self.start_view.set_ranges_cargado(True)
-            except Exception:
-                pass
-
-        messagebox.showinfo(
-            "Lista de precios cargada",
-            f"Se cargo correctamente la LISTA DE PRECIOS.\n\n"
-            f"Archivo: {self.ranges_path.name}\n"
-            f"Articulos con rangos: {len(self.ranges_index)}",
-        )
 
     def _show_start(self):
         self._clear()
@@ -4171,17 +4173,27 @@ class RootApp(tk.Tk):
             on_manage_prov=self._manage_prov_flow,
             on_open_tivendo=self._tivendo_flow,
             on_open_ingreso_masivo=self._ingreso_masivo_flow,
-            on_load_listado=self._choose_listado_inicial,
-            on_load_packs=self._choose_packs_inicial,
-            on_load_ranges=self._choose_ranges_inicial,
-            on_auto_load=self._auto_load_articulos_packs,
-            listado_cargado=self.listado_path is not None,
-            # Refleja si hay un archivo asociado (se cargará al abrir el
-            # buscador), no si ya está leído en memoria en este instante.
-            packs_cargado=bool(self.packs_path),
-            ranges_cargado=bool(self.ranges_path),
-            auto_last_load_text=self.auto_last_load_text,
+            on_load_file=self._cargar_archivo_fuente,
+            on_update_source=lambda key: self._actualizar_fuentes((key,)),
+            on_auto_load=lambda keys: self._actualizar_fuentes(keys, batch=True),
         )
+        self._refresh_start_sources()
+
+    def _refresh_start_sources(self, keys=DATA_SOURCES):
+        if self.start_view is None:
+            return
+        paths = {"articulos": self.listado_path, "packs": self.packs_path, "precios": self.ranges_path}
+        for key in keys:
+            if key == "proveedores":
+                try:
+                    date = datetime.fromtimestamp(EMP_PATH.stat().st_mtime).strftime("%d-%m-%Y %H:%M")
+                except OSError:
+                    date = ""
+                self.start_view.set_source_state(key, bool(load_empresas()), date)
+            else:
+                path = paths[key]
+                date = _resource_download_label(key, path, fallback="") if path else ""
+                self.start_view.set_source_state(key, path is not None, date)
 
     def _require_listado(self) -> bool:
         """Devuelve True si hay listado cargado; muestra aviso y devuelve False si no."""
@@ -4604,6 +4616,9 @@ class TivendoWindow(ttk.Frame):
             text.bind("<<Modified>>", self._al_editar_precios)
             text.bind("<Control-v>", lambda event, i=index: self._pegar_columna_precio(i))
             text.bind("<Control-V>", lambda event, i=index: self._pegar_columna_precio(i))
+            text.bind("<<Paste>>", lambda event, i=index: self._pegar_columna_precio(i))
+            text.bind("<Return>", self._bajar_fila_precio)
+            text.bind("<KP_Enter>", self._bajar_fila_precio)
             text.bind("<Control-a>", lambda event: (event.widget.tag_add("sel", "1.0", "end-1c"), "break")[-1])
             text.bind("<Control-A>", lambda event: (event.widget.tag_add("sel", "1.0", "end-1c"), "break")[-1])
             text.tag_configure("error_dato", background="#FDEBEC")
@@ -4611,7 +4626,7 @@ class TivendoWindow(ttk.Frame):
             self._campos_columnas_precios.append(shell)
         self._scroll_columnas_precios = ttk.Scrollbar(area, orient="vertical", command=self._desplazar_columnas_precios)
         self._scroll_columnas_precios.grid(row=0, column=7, sticky="ns", pady=(36, 0))
-        ttk.Label(f, text="Ctrl+V reemplaza solo la columna elegida. Las cantidades admiten hasta 1000.",
+        ttk.Label(f, text="Enter baja una fila. Ctrl+V pega desde el cursor. Ctrl+A selecciona toda la columna. Cantidades: hasta 1000.",
                   style="Muted.TLabel").pack(anchor="w", pady=(6, 0))
         bottom = ttk.Frame(f)
         bottom.pack(fill="x", pady=(10, 0))
@@ -4673,12 +4688,28 @@ class TivendoWindow(ttk.Frame):
         finally:
             self._sincronizando_columnas_precios = False
 
-    def _rellenar_rango1_por_defecto(self):
-        if not self.ingresar_rangos.get() or self.txt_ri1.get("1.0", "end-1c").strip() or self.txt_rf1.get("1.0", "end-1c").strip():
+    def _rellenar_rango1_por_defecto(self, filas_nuevas=None):
+        if not self.ingresar_rangos.get():
             return
-        codes = self.txt_cod.get("1.0", "end-1c").splitlines()
-        for widget, value in ((self.txt_ri1, "1"), (self.txt_rf1, "1000")):
-            widget.insert("1.0", "\n".join(value if code.strip() else "" for code in codes))
+        widgets = (self.txt_ri1, self.txt_rf1)
+        initial, final = [widget.get("1.0", "end-1c").split("\n") for widget in widgets]
+        codes = self.txt_cod.get("1.0", "end-1c").split("\n")
+        if filas_nuevas is None:
+            if any(value.strip() for value in initial + final):
+                return
+            filas_nuevas = range(len(codes))
+        for column in (initial, final):
+            column.extend([""] * (len(codes) - len(column)))
+        pending = [row for row in filas_nuevas
+                   if codes[row].strip() and not initial[row].strip() and not final[row].strip()]
+        if not pending:
+            return
+        for row in pending:
+            initial[row], final[row] = "1", "1000"
+        for widget, column in zip(widgets, (initial, final)):
+            cursor = widget.index("insert")
+            widget.replace("1.0", "end-1c", "\n".join(column))
+            widget.mark_set("insert", cursor)
 
     def _alternar_segundo_rango(self):
         self.enable_r2.set(not self.enable_r2.get())
@@ -4691,6 +4722,16 @@ class TivendoWindow(ttk.Frame):
         self.ingresar_rangos.set(True)
         self._rellenar_rango1_por_defecto()
         self._toggle_r2()
+
+    def _bajar_fila_precio(self, event):
+        widget = event.widget
+        next_line = int(widget.index("insert").split(".")[0]) + 1
+        if next_line > int(widget.index("end-1c").split(".")[0]):
+            widget.insert("end-1c", "\n")
+        widget.tag_remove("sel", "1.0", "end")
+        widget.mark_set("insert", f"{next_line}.0")
+        widget.see("insert")
+        return "break"
 
     def _pegar_columna_precio(self, index):
         try:
@@ -4710,13 +4751,26 @@ class TivendoWindow(ttk.Frame):
                 values.pop()
             if any("\n" in value or "\r" in value for value in values):
                 raise ValueError("Cada celda debe ocupar una sola fila.")
+            if not values:
+                return "break"
             widget = self._textos_precios()[index]
-            widget.delete("1.0", "end")
-            widget.insert("1.0", "\n".join(values))
-            widget.see("1.0")
+            existing = widget.get("1.0", "end-1c").split("\n")
+            selection = widget.tag_ranges("sel")
+            first_index = selection[0] if selection else "insert"
+            full_column = (selection and str(selection[0]) == "1.0"
+                           and str(selection[-1]) == widget.index("end-1c"))
+            start = int(widget.index(first_index).split(".")[0])
+            last = start + len(values) - 1
+            end = "end-1c" if full_column else f"{min(last, len(existing))}.end"
+            widget.replace(f"{start}.0", end, "\n".join(values))
+            widget.tag_remove("sel", "1.0", "end")
+            widget.mark_set("insert", f"{last}.end")
             if index == 0:
-                self._rellenar_rango1_por_defecto()
+                new_rows = (row for row in range(start - 1, last)
+                            if row >= len(existing) or not existing[row].strip())
+                self._rellenar_rango1_por_defecto(new_rows)
             self._actualizar_pegado_precios()
+            widget.see("insert")
         except (tk.TclError, ValueError, csv.Error) as exc:
             messagebox.showwarning("No se pudo pegar", f"Copia la columna desde Excel y vuelve a pegarla.\n{exc}")
         return "break"
@@ -4745,11 +4799,14 @@ class TivendoWindow(ttk.Frame):
         # Igual altura lógica para que una columna corta conserve sus filas vacías
         # al desplazar la vista junto a las demás, sin correr precios de producto.
         active = [self._textos_precios()[index] for index in self._indices_columnas_precios()]
-        height = max((len(widget.get("1.0", "end-1c").splitlines()) for widget in active), default=0)
-        for widget in active:
-            missing = height - (widget.get("1.0", "end-1c").count("\n") + 1)
+        heights = [widget.get("1.0", "end-1c").count("\n") for widget in active]
+        height = max(heights)
+        for widget, current in zip(active, heights):
+            missing = height - current
             if missing > 0:
+                cursor = widget.index("insert")
                 widget.insert("end-1c", "\n" * missing)
+                widget.mark_set("insert", cursor)
                 widget.edit_modified(False)
         rows = self._leer_filas_precios()
         valid = bool(rows)

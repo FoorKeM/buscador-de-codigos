@@ -12,9 +12,9 @@ A single-file Python 3 desktop app (`buscador_codigos.py`) for a Chilean retail/
 
 ```
 RootApp (Tk root window)
-├── StartView          — main menu, four action buttons
+├── StartView          — three tools and four data sources with individual/batch updates
 ├── SearchView         — product code search
-├── ProvidersView      — CRUD for supplier list
+├── ProvidersView      — supplier list and Defontana sync/import
 ├── TivendoWindow      — (Toplevel) 3-step mass price change wizard
 ├── TivendoIngresoMasivoArticulosWindow — (Toplevel) 3-step mass article ingestion wizard
 └── AutoBuildDBWindow  — (Toplevel) progress dialog for Excel→DB transform
@@ -75,7 +75,7 @@ Normalized columns added to every DataFrame:
 ## Views in detail
 
 ### StartView
-Main menu. Four buttons: Buscar Código, Administrar proveedores, CAMBIOS MASIVOS TIVENDO, INGRESO MASIVO TIVENDO. All buttons except "cargar listado" are disabled until a listado is loaded.
+Main menu with search and both bulk tools. «Datos cargados» lists articles, packs, prices/ranges and suppliers, with their own update date, file picker and download. The batch button uses one session and applies successful sources independently. Search requires a loaded article list.
 
 ### SearchView
 - Multi-code text input (one per line or comma-separated)
@@ -87,14 +87,14 @@ Main menu. Four buttons: Buscar Código, Administrar proveedores, CAMBIOS MASIVO
 - Right-click context menu on rows
 
 ### ProvidersView
-CRUD treeview backed by `empresas.json`. Reads/writes the file on every change.
+Read-only treeview backed by `empresas.json`. Sync downloads the Categorías workbook from Defontana through the existing ERP Digital session. Manual import accepts the same Excel export. Both validate the workbook and replace the list by ID without merging the seed. Automatic downloads are temporary.
 
 ### AutoBuildDBWindow (Toplevel)
 Progress dialog. Runs `transform_export(path, progress_cb)` in a background thread. Saves result to `TMP_DIR/MH_TMP_BASE_<stem>.xlsx`.
 
 ### TivendoWindow (Toplevel) — 3-step wizard
 - **Step A**: select listado, loads async in thread
-- **Step B**: independent multiline paste columns, with range 1 always visible/required. The block is horizontally centered, with moderate fixed barcode/price/quantity widths (24/14/8 characters). Columns use the available height and share one vertical scrollbar; no horizontal scrollbars. Only range 2 and price 2 are optional. Quantities max 1000. Ctrl+V replaces only its target column and preserves internal empty rows. There is no whole-table paste button/parser/fallback; multi-column clipboard content is rejected without changing existing data.
+- **Step B**: independent multiline paste columns, with range 1 always visible/required. The block is horizontally centered, with moderate fixed barcode/price/quantity widths (24/14/8 characters). Columns use the available height and share one vertical scrollbar; no horizontal scrollbars. Only range 2 and price 2 are optional. Quantities max 1000. Enter moves to the next row and Ctrl+V pastes from the current row without shifting other rows or columns. Ctrl+A selects the whole column for replacement. Empty clipboard rows inside a block are preserved. There is no whole-table paste button/parser/fallback; multi-column clipboard content is rejected without changing existing data.
 - **Step C**: preview treeview with editable Precio column, range assignment, Excel export for Tivendo import
 - Uses pre-computed `_df_preview_norm` dict for O(1) row filtering
 
@@ -118,7 +118,7 @@ Key helpers for this window:
 
 | File | Location | Purpose |
 |------|----------|---------|
-| `empresas.json` | app directory | Supplier dict `{"1": "Name", ...}` |
+| `empresas.json` | app data directory (legacy app directory as fallback) | Supplier dict `{"1": "Name", ...}` |
 | `buscador_prefs.json` | app directory | `last_dir`, `geometry`, `exact`, `by_barras`, `empresa_display` |
 | `base_codigos_cache.pkl` | `CACHE_DIR` | Pickled DataFrame cache |
 | `base_codigos_cache_meta.json` | `CACHE_DIR` | Cache metadata (src_key, mtime) |

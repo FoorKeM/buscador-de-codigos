@@ -29,13 +29,46 @@ class Var:
     def get(self): return self.value
     def set(self, value): self.value=value
 class Text:
-    def __init__(self, text=''): self.text=text; self.errors=[]; self.options={}
+    def __init__(self, text=''):
+        self.text = text
+        self.errors = []
+        self.options = {}
+        self.cursor = '1.0'
+        self.selection = ()
     def get(self,*a): return self.text
-    def delete(self,*a): self.text=''
+    def delete(self,*a):
+        self.text = ''
+        self.cursor = '1.0'
+        self.selection = ()
     def insert(self,index,text): self.text = self.text + text if index == 'end-1c' else text
+    def index(self, index):
+        lines = self.text.split('\n')
+        if index == 'insert':
+            return self.cursor
+        if index == 'end-1c':
+            return f'{len(lines)}.{len(lines[-1])}'
+        line, column = index.split('.')
+        if column == 'end':
+            column = len(lines[int(line) - 1])
+        return f'{line}.{column}'
+    def replace(self, start, end, text):
+        def offset(index):
+            line, column = map(int, self.index(index).split('.'))
+            return sum(len(row) + 1 for row in self.text.split('\n')[:line - 1]) + column
+        self.text = self.text[:offset(start)] + text + self.text[offset(end):]
+    def mark_set(self, mark, index): self.cursor = self.index(index)
     def edit_modified(self,*a):return False
-    def tag_remove(self,*a): self.errors=[]
-    def tag_add(self,*a): self.errors.append(a)
+    def tag_ranges(self, tag): return self.selection if tag == 'sel' else ()
+    def tag_remove(self, tag, *_):
+        if tag == 'sel':
+            self.selection = ()
+        else:
+            self.errors = []
+    def tag_add(self, tag, start, end):
+        if tag == 'sel':
+            self.selection = (self.index(start), self.index(end))
+        else:
+            self.errors.append((tag, start, end))
     def see(self,*a):pass
     def configure(self,**kw):self.options.update(kw)
 class Tree(Widget):
