@@ -77,6 +77,7 @@ import csv
 import io
 import unicodedata
 import difflib
+import random
 import numpy as np
 from html.parser import HTMLParser
 from datetime import datetime
@@ -104,7 +105,7 @@ _RE_CODE_TOKEN = re.compile(r"[a-z0-9-]{3,}")  # valida cada trozo de codigo (le
 
 STRIPE_COLOR = "#F3F6FA"
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v160"
+APP_VERSION  = "v162"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -2414,6 +2415,173 @@ def load_price_ranges_data(path: Path):
     return pd.DataFrame(rows), ranges_index
 
 
+class SnakeGame:
+    """Reglas del Snake clásico en una cuadrícula."""
+    columns, rows = 24, 20
+
+    def __init__(self):
+        x, y = self.columns // 2, self.rows // 2
+        self.body = [(x, y), (x - 1, y), (x - 2, y)]
+        self.direction = self.next_direction = (1, 0)
+        self.food = self._choose_food()
+
+    @property
+    def score(self):
+        return len(self.body) - 3
+
+    def _choose_food(self):
+        occupied = set(self.body)
+        empty = [(x, y) for y in range(self.rows) for x in range(self.columns) if (x, y) not in occupied]
+        return random.choice(empty) if empty else None
+
+    def turn(self, direction):
+        dx, dy = self.direction
+        if self.next_direction == self.direction and direction != (-dx, -dy):
+            self.next_direction = direction
+
+    def step(self):
+        self.direction = self.next_direction
+        x, y = self.body[0]
+        dx, dy = self.direction
+        head = (x + dx, y + dy)
+        grows = head == self.food
+        occupied = self.body if grows else self.body[:-1]
+        if not (0 <= head[0] < self.columns and 0 <= head[1] < self.rows) or head in occupied:
+            return False
+        self.body.insert(0, head)
+        if grows:
+            self.food = self._choose_food()
+        else:
+            self.body.pop()
+        return True
+
+
+class SnakeWindow(tk.Toplevel):
+    """Juego independiente en el mismo bucle de eventos que el Buscador."""
+    cell = 20
+
+    def __init__(self, master):
+        super().__init__(master)
+        self.title("Snake — Mercado House")
+        self.configure(background=UI["background"])
+        self.resizable(False, False)
+        self.game = SnakeGame()
+        self.mode = "ready"
+        self.best = 0
+        self._tick_id = None
+
+        content = ttk.Frame(self, padding=16)
+        content.pack(fill="both", expand=True)
+        header = ttk.Frame(content)
+        header.pack(fill="x", pady=(0, 8))
+        ttk.Label(header, text="Snake", style="Title.TLabel").pack(side="left")
+        self.score_label = ttk.Label(header, style="Section.TLabel")
+        self.score_label.pack(side="right")
+
+        self.width = self.game.columns * self.cell
+        self.height = self.game.rows * self.cell
+        self.canvas = tk.Canvas(content, width=self.width, height=self.height,
+                                background="#182638", highlightthickness=0, takefocus=True)
+        self.canvas.pack()
+        for x in range(self.cell, self.width, self.cell):
+            self.canvas.create_line(x, 0, x, self.height, fill="#223447")
+        for y in range(self.cell, self.height, self.cell):
+            self.canvas.create_line(0, y, self.width, y, fill="#223447")
+
+        controls = ttk.Frame(content)
+        controls.pack(fill="x", pady=(10, 0))
+        self.play_button = ttk.Button(controls, style="Primary.TButton", command=self._start)
+        self.play_button.pack(side="left")
+        self.pause_button = ttk.Button(controls, command=self._toggle_pause)
+        self.pause_button.pack(side="left", padx=8)
+        ttk.Label(controls, text="Flechas: mover · Espacio: pausa", style="Muted.TLabel").pack(side="right")
+
+        for key, direction in (("Up", (0, -1)), ("Down", (0, 1)), ("Left", (-1, 0)), ("Right", (1, 0))):
+            self.bind(f"<KeyPress-{key}>", lambda _event, move=direction: self._turn(move))
+        self.canvas.bind("<Return>", self._start)
+        self.canvas.bind("<space>", self._toggle_pause)
+        self.bind("<Escape>", lambda _event: self.destroy())
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self._draw()
+        self.canvas.focus_set()
+
+    def _start(self, _event=None):
+        self._stop_timer()
+        self.game = SnakeGame()
+        self.mode = "playing"
+        self._draw()
+        self.canvas.focus_set()
+        self._schedule_tick()
+        return "break"
+
+    def _turn(self, direction):
+        if self.mode == "playing":
+            self.game.turn(direction)
+        return "break"
+
+    def _toggle_pause(self, _event=None):
+        if self.mode == "playing":
+            self.mode = "paused"
+            self._stop_timer()
+        elif self.mode == "paused":
+            self.mode = "playing"
+            self._schedule_tick()
+        self._draw()
+        self.canvas.focus_set()
+        return "break"
+
+    def _schedule_tick(self):
+        self._tick_id = self.after(max(70, 145 - self.game.score * 3), self._advance)
+
+    def _advance(self):
+        self._tick_id = None
+        if not self.game.step():
+            self.mode = "lost"
+        elif self.game.food is None:
+            self.mode = "won"
+        self._draw()
+        if self.mode == "playing":
+            self._schedule_tick()
+
+    def _draw(self):
+        self.canvas.delete("piece")
+        for index, (x, y) in enumerate(self.game.body):
+            left, top = x * self.cell, y * self.cell
+            self.canvas.create_rectangle(left + 1, top + 1, left + self.cell - 1, top + self.cell - 1,
+                                         fill="#87E7BE" if index == 0 else "#35AD84", width=0, tags="piece")
+        if self.game.food is not None:
+            x, y = self.game.food
+            left, top = x * self.cell, y * self.cell
+            self.canvas.create_oval(left + 3, top + 4, left + self.cell - 3, top + self.cell - 2,
+                                    fill="#FF876A", width=0, tags="piece")
+        if self.mode != "playing":
+            title, hint = {
+                "ready": ("¿Una partida?", "Pulsa Enter o Jugar para empezar"),
+                "paused": ("En pausa", "Pulsa Espacio para continuar"),
+                "lost": ("Fin de la partida", "Pulsa Enter para volver a jugar"),
+                "won": ("¡Tablero completo!", "Pulsa Enter para otra partida"),
+            }[self.mode]
+            x, y = self.width // 2, self.height // 2
+            self.canvas.create_rectangle(x - 169, y - 43, x + 169, y + 43,
+                                         fill="#142133", outline="#375169", tags="piece")
+            self.canvas.create_text(x, y - 12, text=title, fill="#FFFFFF", font=("Segoe UI", 18, "bold"), tags="piece")
+            self.canvas.create_text(x, y + 18, text=hint, fill="#C6D7E8", font=("Segoe UI", 10), tags="piece")
+        self.best = max(self.best, self.game.score)
+        self.score_label.config(text=f"Puntos {self.game.score}   ·   Récord {self.best}")
+        self.play_button.config(text="Jugar" if self.mode == "ready" else "Reiniciar")
+        self.pause_button.config(text="Continuar" if self.mode == "paused" else "Pausar",
+                                 state="normal" if self.mode in {"playing", "paused"} else "disabled")
+
+    def _stop_timer(self):
+        if self._tick_id is not None:
+            self.after_cancel(self._tick_id)
+            self._tick_id = None
+
+    def destroy(self):
+        self._stop_timer()
+        super().destroy()
+
+
 class StartView(ttk.Frame):
     """Inicio con tareas principales y fuentes de datos claramente separadas."""
     def __init__(
@@ -2434,6 +2602,8 @@ class StartView(ttk.Frame):
         footer = ttk.Frame(self, style="Home.TFrame")
         footer.pack(side="bottom", fill="x", padx=18, pady=(7, 12))
         ttk.Label(footer, text=f"Versión {APP_VERSION}", style="HomeMuted.TLabel").pack(side="right")
+        self._snake_window = None
+        ttk.Button(footer, text="Aburrido", command=self._open_snake).pack(side="right", padx=(0, 14))
         self.btn_cargar_auto = ttk.Button(footer, text="Actualizar todos los datos",
                                           command=lambda: on_auto_load(self.selected_sources()),
                                           style="HomeTeal.TButton")
@@ -2511,6 +2681,14 @@ class StartView(ttk.Frame):
         self.update_status = ttk.Label(self.update_panel, style="HomeDataMuted.TLabel", wraplength=830, justify="left")
         self.update_status.pack(fill="x", pady=(4, 0))
         self.update_bar = ttk.Progressbar(self.update_panel, mode="indeterminate")
+
+    def _open_snake(self):
+        if self._snake_window is None or not self._snake_window.winfo_exists():
+            self._snake_window = SnakeWindow(self)
+        else:
+            self._snake_window.deiconify()
+            self._snake_window.lift()
+            self._snake_window.canvas.focus_set()
 
     def selected_sources(self):
         return tuple(key for key, choice in self.source_selection.items() if choice.get())
