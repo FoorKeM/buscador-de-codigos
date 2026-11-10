@@ -104,7 +104,7 @@ _RE_CODE_TOKEN = re.compile(r"[a-z0-9-]{3,}")  # valida cada trozo de codigo (le
 
 STRIPE_COLOR = "#F3F6FA"
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v159"
+APP_VERSION  = "v160"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -175,10 +175,12 @@ def _configure_home_ui(style):
     style.configure("HomeMuted.TLabel", background=background, foreground=UI["muted"])
     style.configure("HomeData.TFrame", background="#FFFFFF", borderwidth=1,
                     bordercolor="#E5DFF0", relief="solid")
-    style.configure("HomeDataInner.TFrame", background="#FFFFFF")
     style.configure("HomeDataTitle.TLabel", background="#FFFFFF", foreground=UI["ink"],
                     font=("Segoe UI", 12, "bold"))
     style.configure("HomeData.TCheckbutton", background="#FFFFFF")
+    style.configure("HomeSelection.TButton", background="#EEE6FA", foreground="#463276", bordercolor="#D9CAEF")
+    style.map("HomeSelection.TButton", background=[("disabled", "#F3EFF8"), ("pressed", "#DCCCF4"),
+                                                   ("active", "#E6DAF7")])
     for name, color in (("Success", UI["success"]), ("Warning", UI["warning"]),
                         ("Active", UI["primary"]), ("Danger", UI["danger"]),
                         ("Muted", UI["muted"])):
@@ -1351,13 +1353,6 @@ def leer_proveedores_defontana(path: Path) -> Dict[int, str]:
     return data
 
 
-async def auto_download_proveedores(usuario: str, password: str, progress_cb) -> Dict[int, str]:
-    loaded, errors = await auto_download_sources(usuario, password, ("proveedores",), progress_cb)
-    if errors:
-        raise errors["proveedores"]
-    return loaded["proveedores"]
-
-
 async def _auto_download_provider_categories(erp_page, staging, progress):
     progress("Abriendo ERP Digital → Inventario → Artículos…")
     erp_page.on("requestfailed", _auto_log_provider_navigation_failure)
@@ -2425,7 +2420,6 @@ class StartView(ttk.Frame):
         self,
         master,
         on_choose_db,
-        on_manage_prov,
         on_open_tivendo,
         on_open_ingreso_masivo,
         on_load_file,
@@ -2483,9 +2477,10 @@ class StartView(ttk.Frame):
             row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
         ttk.Label(sources, text="Marca qué actualizar en grupo.",
                   style="HomeDataMuted.TLabel").grid(row=0, column=2, sticky="w", padx=(12, 0))
-        mark_all = ttk.Button(sources, text="Marcar todas", command=self.mark_all_sources)
-        mark_all.grid(row=0, column=5, sticky="e", pady=(0, 4))
-        self.update_controls.append(mark_all)
+        self.btn_toggle_sources = ttk.Button(sources, width=15, command=self.toggle_all_sources,
+                                             style="HomeSelection.TButton")
+        self.btn_toggle_sources.grid(row=0, column=4, sticky="e", pady=(0, 4))
+        self.update_controls.append(self.btn_toggle_sources)
 
         selected = load_prefs().get("update_sources")
         if not isinstance(selected, list):
@@ -2503,16 +2498,12 @@ class StartView(ttk.Frame):
             date = ttk.Label(sources, style="HomeDataMuted.TLabel")
             date.grid(row=row, column=2, sticky="w", padx=(12, 4))
             self.source_labels[key] = label, date
-            if key == "proveedores":
-                listing = ttk.Button(sources, text="Ver lista", width=8, command=on_manage_prov)
-                listing.grid(row=row, column=3)
-                self.update_controls.append(listing)
             choose = ttk.Button(sources, text="Elegir archivo", command=lambda key=key: on_load_file(key))
-            choose.grid(row=row, column=4, padx=(8, 0), pady=2)
+            choose.grid(row=row, column=3, padx=(8, 0), pady=2)
             update = ttk.Button(sources, text="Actualizar", command=lambda key=key: on_update_source(key))
-            update.grid(row=row, column=5, padx=(8, 0), pady=2)
+            update.grid(row=row, column=4, padx=(8, 0), pady=2)
             self.update_controls.extend((select, choose, update))
-        self.refresh_batch_button()
+        self.refresh_source_selection_controls()
 
         self.update_panel = ttk.Frame(self, style="HomeData.TFrame", padding=(14, 10))
         self.update_title = ttk.Label(self.update_panel, style="HomeDataTitle.TLabel")
@@ -2524,20 +2515,23 @@ class StartView(ttk.Frame):
     def selected_sources(self):
         return tuple(key for key, choice in self.source_selection.items() if choice.get())
 
-    def refresh_batch_button(self):
+    def refresh_source_selection_controls(self):
         count = len(self.selected_sources())
-        title = "Actualizar todos los datos" if count == len(DATA_SOURCES) else "Actualizar seleccionados"
+        all_selected = count == len(DATA_SOURCES)
+        title = "Actualizar todos los datos" if all_selected else "Actualizar seleccionados"
         self.btn_cargar_auto.config(text=title, state="normal" if count else "disabled")
+        self.btn_toggle_sources.config(text="Desmarcar todas" if all_selected else "Marcar todas")
 
     def save_source_selection(self):
         prefs = load_prefs()
         prefs["update_sources"] = list(self.selected_sources())
         save_prefs(prefs)
-        self.refresh_batch_button()
+        self.refresh_source_selection_controls()
 
-    def mark_all_sources(self):
+    def toggle_all_sources(self):
+        select = not all(choice.get() for choice in self.source_selection.values())
         for choice in self.source_selection.values():
-            choice.set(True)
+            choice.set(select)
         self.save_source_selection()
 
     def begin_source_update(self, title, keys, *, batch=False):
@@ -2568,7 +2562,7 @@ class StartView(ttk.Frame):
             button.state(("!disabled",))
         self.update_in_progress = False
         self.btn_buscar.config(state="normal" if self.article_loaded else "disabled")
-        self.refresh_batch_button()
+        self.refresh_source_selection_controls()
 
     def set_source_status(self, key, status):
         label, _ = self.source_labels[key]
@@ -2583,108 +2577,6 @@ class StartView(ttk.Frame):
             self.article_loaded = loaded
             if not self.update_in_progress:
                 self.btn_buscar.config(state="normal" if loaded else "disabled")
-
-class ProvidersView(ttk.Frame):
-    """Consulta el catálogo de proveedores y lo actualiza desde Defontana."""
-    def __init__(self, master, go_home_cb):
-        super().__init__(master)
-        self.master.title("Administrar proveedores")
-        self.pack(fill="both", expand=True, padx=16, pady=14)
-        self.go_home_cb = go_home_cb
-        self.data = load_empresas()
-
-        top = ttk.Frame(self); top.pack(fill="x")
-        self.btn_back = ttk.Button(top, text="← Inicio", command=self.go_home_cb)
-        self.btn_back.pack(side="left")
-        ttk.Label(top, text="Proveedores", style="Title.TLabel").pack(side="left", padx=16)
-        ttk.Label(self, text="Actualiza la lista completa desde Categorías de Defontana.",
-                  style="Muted.TLabel").pack(anchor="w", pady=(5, 0))
-
-        footer = ttk.Frame(self)
-        footer.pack(side="bottom", fill="x", pady=(6, 0))
-        self.btn_sync = ttk.Button(footer, text="Sincronizar desde Defontana", command=self._sync_proveedores,
-                                   style="Primary.TButton")
-        self.btn_sync.pack(side="left")
-        self.btn_import = ttk.Button(footer, text="Cargar Excel manualmente", command=self._importar_proveedores)
-        self.btn_import.pack(side="left", padx=8)
-        self.status = ttk.Label(footer, text=f"{len(self.data)} proveedores", style="Muted.TLabel")
-        self.status.pack(side="left", padx=6)
-
-        mid = ttk.Frame(self); mid.pack(fill="both", expand=True, pady=8)
-        self.tree = ttk.Treeview(mid, columns=("id","nombre"), show="headings", selectmode="browse", height=20)
-        self.tree.heading("id", text="Id"); self.tree.column("id", width=90, anchor="center")
-        self.tree.heading("nombre", text="Nombre"); self.tree.column("nombre", width=520, anchor="w")
-        vsb = ttk.Scrollbar(mid, orient="vertical", command=self.tree.yview); self.tree.configure(yscroll=vsb.set)
-        self.tree.pack(side="left", fill="both", expand=True); vsb.pack(side="right", fill="y")
-        self.reload()
-
-    def reload(self):
-        for x in self.tree.get_children():
-            self.tree.delete(x)
-        for iid, name in sorted(self.data.items(), key=lambda x: x[0]):
-            self.tree.insert("", "end", values=(iid, name))
-
-    def _sync_proveedores(self):
-        credentials = self.master._ask_auto_credentials()
-        if not credentials:
-            return
-        usuario, password = credentials
-        save_auto_credentials(usuario, password)
-
-        def download(progress):
-            try:
-                return asyncio.run(auto_download_proveedores(usuario, password, progress))
-            except TivendoLoginError as exc:
-                save_auto_credentials(usuario, "")
-                raise AutoDownloadError("Revisa tu usuario y contraseña de Tivendo y vuelve a sincronizar.") from exc
-
-        self._actualizar_proveedores(download, "Defontana")
-
-    def _importar_proveedores(self):
-        path = filedialog.askopenfilename(title="Selecciona el Excel de Categorías de Defontana",
-                                          filetypes=[("Excel de Categorías", "*.xlsx")], parent=self)
-        if path:
-            self._actualizar_proveedores(lambda _progress: leer_proveedores_defontana(Path(path)), "Excel")
-
-    def _actualizar_proveedores(self, load, source):
-        buttons = (self.btn_back, self.btn_sync, self.btn_import)
-        for button in buttons:
-            button.config(state="disabled")
-        self.status.config(text="Preparando la actualización…", style="Muted.TLabel")
-
-        def progress(text):
-            self.after(0, lambda: self.status.config(text=text))
-
-        def apply(data=None, error=None):
-            if not self.winfo_exists():
-                return
-            for button in buttons:
-                button.config(state="normal")
-            if error is None:
-                try:
-                    save_empresas(data)
-                except OSError:
-                    error = "No se pudo guardar la lista. Comprueba que el programa tenga permiso para escribir en su carpeta."
-            if error is not None:
-                self.status.config(text=f"Se conservan {len(self.data)} proveedores", style="Warning.TLabel")
-                messagebox.showerror("No se actualizaron los proveedores", error, parent=self)
-                return
-            self.data = data
-            self.reload()
-            self.status.config(text=f"{len(data)} proveedores · {source}", style="Success.TLabel")
-
-        def worker():
-            try:
-                data = load(progress)
-            except (ValueError, AutoDownloadError) as exc:
-                self.after(0, lambda error=str(exc): apply(error=error))
-            except Exception:
-                self.after(0, lambda: apply(error="No se pudo obtener el Excel desde Defontana. "
-                    "Revisa tu conexión y el acceso a Inventario → Artículos, o carga el archivo manualmente."))
-            else:
-                self.after(0, lambda: apply(data=data))
-
-        threading.Thread(target=worker, daemon=True).start()
 
 class SearchView(ttk.Frame):
     """Buscador con barra superior para el botón Volver (no desplaza el contenido)."""
@@ -4170,7 +4062,6 @@ class RootApp(tk.Tk):
         self.start_view = StartView(
             self,
             on_choose_db=self._choose_db_flow,
-            on_manage_prov=self._manage_prov_flow,
             on_open_tivendo=self._tivendo_flow,
             on_open_ingreso_masivo=self._ingreso_masivo_flow,
             on_load_file=self._cargar_archivo_fuente,
@@ -4239,10 +4130,6 @@ class RootApp(tk.Tk):
             AutoBuildDBWindow(self, self.listado_path, _done)
 
         self._ensure_packs_ranges_loaded(_open_search)
-
-    def _manage_prov_flow(self):
-        self._clear()
-        ProvidersView(self, go_home_cb=self._show_start)
 
     def _tivendo_flow(self):
         # Abre la herramienta de cambios masivos de precios en la ventana principal

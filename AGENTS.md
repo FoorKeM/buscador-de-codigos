@@ -14,7 +14,6 @@ A single-file Python 3 desktop app (`buscador_codigos.py`) for a Chilean retail/
 RootApp (Tk root window)
 ├── StartView          — three tools and four data sources with individual/batch updates
 ├── SearchView         — product code search
-├── ProvidersView      — supplier list and Defontana sync/import
 ├── TivendoWindow      — (Toplevel) 3-step mass price change wizard
 ├── TivendoIngresoMasivoArticulosWindow — (Toplevel) 3-step mass article ingestion wizard
 └── AutoBuildDBWindow  — (Toplevel) progress dialog for Excel→DB transform
@@ -77,6 +76,8 @@ Normalized columns added to every DataFrame:
 ### StartView
 Main menu with search and both bulk tools. «Datos cargados» lists articles, packs, prices/ranges and suppliers, with their own update date, file picker and download. The batch button uses one session and applies successful sources independently. Search requires a loaded article list.
 
+The supplier row downloads the Categorías workbook from ERP Digital or imports the same workbook manually. Both validate the workbook and replace the supplier list in `empresas.json` by ID without merging the seed. Automatic downloads are temporary.
+
 ### SearchView
 - Multi-code text input (one per line or comma-separated)
 - Checkboxes: exact match, by barcode
@@ -85,9 +86,6 @@ Main menu with search and both bulk tools. «Datos cargados» lists articles, pa
 - Copy operations: barcodes, names, not-found codes
 - CSV export
 - Right-click context menu on rows
-
-### ProvidersView
-Read-only treeview backed by `empresas.json`. Sync downloads the Categorías workbook from Defontana through the existing ERP Digital session. Manual import accepts the same Excel export. Both validate the workbook and replace the list by ID without merging the seed. Automatic downloads are temporary.
 
 ### AutoBuildDBWindow (Toplevel)
 Progress dialog. Runs `transform_export(path, progress_cb)` in a background thread. Saves result to `TMP_DIR/MH_TMP_BASE_<stem>.xlsx`.

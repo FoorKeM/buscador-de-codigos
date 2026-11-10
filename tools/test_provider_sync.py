@@ -17,9 +17,10 @@ def write_categories(path, rows):
 
 
 class ProviderSyncTests(unittest.TestCase):
-    def test_recuerda_la_seleccion_y_marcar_todas_la_restauran(self):
+    def test_recuerda_la_seleccion_y_alterna_marcar_y_desmarcar_todas(self):
         view = object.__new__(app.StartView)
         view.btn_cargar_auto = mock.Mock()
+        view.btn_toggle_sources = mock.Mock()
         view.source_selection = {key: mock.Mock() for key in app.DATA_SOURCES}
         for key, choice in view.source_selection.items():
             choice.get.return_value = key in {"packs", "proveedores"}
@@ -30,9 +31,17 @@ class ProviderSyncTests(unittest.TestCase):
             view.save_source_selection()
             self.assertEqual(app.load_prefs(), {"geometry": "1120x720", "update_sources": ["packs", "proveedores"]})
             view.btn_cargar_auto.config.assert_called_with(text="Actualizar seleccionados", state="normal")
-            view.mark_all_sources()
+            view.btn_toggle_sources.config.assert_called_with(text="Marcar todas")
+            view.toggle_all_sources()
             self.assertEqual(app.load_prefs()["update_sources"], list(app.DATA_SOURCES))
             view.btn_cargar_auto.config.assert_called_with(text="Actualizar todos los datos", state="normal")
+            view.btn_toggle_sources.config.assert_called_with(text="Desmarcar todas")
+            view.toggle_all_sources()
+            self.assertEqual(app.load_prefs()["update_sources"], [])
+            view.btn_cargar_auto.config.assert_called_with(text="Actualizar seleccionados", state="disabled")
+            view.btn_toggle_sources.config.assert_called_with(text="Marcar todas")
+            view.toggle_all_sources()
+            self.assertEqual(view.selected_sources(), tuple(app.DATA_SOURCES))
 
     def test_inicio_muestra_progreso_y_resultado_en_el_panel(self):
         for error in (None, ValueError("Excel inválido")):
@@ -188,31 +197,27 @@ class ProviderSyncTests(unittest.TestCase):
             path = Path(directory) / "categorias.xlsx"
             store = Path(directory) / "empresas.json"
             write_categories(path, [(7, "NUEVO NOMBRE", None, 1), (196, "NA", None, 1)])
-            view = object.__new__(app.ProvidersView)
-            view.data = {7: "Nombre anterior", 12: "Ya no existe"}
-            view.winfo_exists = lambda: True
-            view.after = lambda _delay, callback: callback()
-            view.reload = mock.Mock()
-            for name in ("btn_back", "btn_sync", "btn_import", "status"):
-                setattr(view, name, mock.Mock())
+            root = object.__new__(app.RootApp)
+            root._auto_load_busy = False
+            root.start_view = mock.Mock()
+            root.after = lambda _delay, callback: callback()
+            root._refresh_start_sources = mock.Mock()
 
             with mock.patch.object(app, "EMP_PATH", store), \
+                 mock.patch.object(app, "PREF_PATH", Path(directory) / "prefs.json"), \
                  mock.patch.object(app.filedialog, "askopenfilename", return_value=str(path)), \
-                 mock.patch.object(app.threading, "Thread", side_effect=lambda target, **_: SimpleNamespace(start=target)), \
-                 mock.patch.object(app.messagebox, "showerror") as show_error:
-                app.save_empresas(view.data)
-                view._importar_proveedores()
+                 mock.patch.object(app.threading, "Thread", side_effect=lambda target, **_: SimpleNamespace(start=target)):
+                app.save_empresas({7: "Nombre anterior", 12: "Ya no existe"})
+                root._cargar_archivo_fuente("proveedores")
                 expected = {7: "NUEVO NOMBRE", 196: "NA"}
                 self.assertEqual(app.load_empresas(), expected)
-                self.assertEqual(view.data, expected)
                 self.assertTrue(path.is_file())
 
                 write_categories(path, [(7, "Uno", None, 1), (7, "Duplicado", None, 1)])
-                view._importar_proveedores()
-                show_error.assert_called_once()
+                root._cargar_archivo_fuente("proveedores")
+                root.start_view.set_source_status.assert_called_with("proveedores", "Error")
                 self.assertEqual(app.load_empresas(), expected)
-                self.assertEqual(view.data, expected)
-                view.reload.assert_called_once()
+                root._refresh_start_sources.assert_called_once_with(("proveedores",))
 
     def test_descarga_de_categorias_se_limpia_con_excel_valido_o_invalido(self):
         module = ModuleType("playwright.async_api")
