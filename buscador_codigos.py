@@ -105,7 +105,7 @@ _RE_CODE_TOKEN = re.compile(r"[a-z0-9-]{3,}")  # valida cada trozo de codigo (le
 
 STRIPE_COLOR = "#F3F6FA"
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v162"
+APP_VERSION  = "v166"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -2456,15 +2456,12 @@ class SnakeGame:
         return True
 
 
-class SnakeWindow(tk.Toplevel):
-    """Juego independiente en el mismo bucle de eventos que el Buscador."""
+class SnakePanel(ttk.Frame):
+    """Snake dentro de la ventana de minijuegos."""
     cell = 20
 
     def __init__(self, master):
         super().__init__(master)
-        self.title("Snake — Mercado House")
-        self.configure(background=UI["background"])
-        self.resizable(False, False)
         self.game = SnakeGame()
         self.mode = "ready"
         self.best = 0
@@ -2483,6 +2480,8 @@ class SnakeWindow(tk.Toplevel):
         self.canvas = tk.Canvas(content, width=self.width, height=self.height,
                                 background="#182638", highlightthickness=0, takefocus=True)
         self.canvas.pack()
+        self.canvas.bind("<Map>", lambda _event: self.canvas.focus_set())
+        self.canvas.bind("<Button-1>", lambda _event: self.canvas.focus_set())
         for x in range(self.cell, self.width, self.cell):
             self.canvas.create_line(x, 0, x, self.height, fill="#223447")
         for y in range(self.cell, self.height, self.cell):
@@ -2497,11 +2496,9 @@ class SnakeWindow(tk.Toplevel):
         ttk.Label(controls, text="Flechas: mover · Espacio: pausa", style="Muted.TLabel").pack(side="right")
 
         for key, direction in (("Up", (0, -1)), ("Down", (0, 1)), ("Left", (-1, 0)), ("Right", (1, 0))):
-            self.bind(f"<KeyPress-{key}>", lambda _event, move=direction: self._turn(move))
+            self.canvas.bind(f"<KeyPress-{key}>", lambda _event, move=direction: self._turn(move))
         self.canvas.bind("<Return>", self._start)
         self.canvas.bind("<space>", self._toggle_pause)
-        self.bind("<Escape>", lambda _event: self.destroy())
-        self.protocol("WM_DELETE_WINDOW", self.destroy)
         self._draw()
         self.canvas.focus_set()
 
@@ -2582,6 +2579,418 @@ class SnakeWindow(tk.Toplevel):
         super().destroy()
 
 
+def _game_heading(parent, title, instructions):
+    ttk.Label(parent, text=title, style="Title.TLabel").pack(anchor="w")
+    ttk.Label(parent, text=instructions, style="Muted.TLabel", wraplength=480).pack(anchor="w", pady=(3, 12))
+
+
+def _game_grid(parent, size, on_pick):
+    board = ttk.Frame(parent)
+    board.pack(pady=(0, 10))
+    buttons = []
+    for index in range(size * size):
+        button = tk.Button(board, width=5, height=2, font=("Segoe UI", 17, "bold"),
+                           background="#E6EDF7", foreground=UI["ink"], disabledforeground=UI["ink"],
+                           activebackground="#D6E4F4", relief="flat", command=lambda i=index: on_pick(i))
+        button.grid(row=index // size, column=index % size, padx=3, pady=3)
+        buttons.append(button)
+    return buttons
+
+
+class MemoryPanel(ttk.Frame):
+    def __init__(self, master):
+        super().__init__(master)
+        self._hide_id = None
+        _game_heading(self, "Memoria", "Da vuelta dos cartas para encontrar las ocho parejas.")
+        self.tiles = _game_grid(self, 4, self._reveal)
+        footer = ttk.Frame(self)
+        footer.pack(fill="x")
+        self.status = ttk.Label(footer, style="Section.TLabel")
+        self.status.pack(side="left")
+        ttk.Button(footer, text="Mezclar cartas", command=self._reset).pack(side="right")
+        self._reset()
+
+    def _reset(self):
+        self._cancel_hide()
+        self.cards = list("ABCDEFGH") * 2
+        random.shuffle(self.cards)
+        self.revealed = []
+        self.pairs = self.moves = 0
+        for tile in self.tiles:
+            tile.config(text="?", state="normal", background="#E6EDF7")
+        self._update_score()
+
+    def _reveal(self, index):
+        if len(self.revealed) == 2:
+            return
+        self.tiles[index].config(text=self.cards[index], state="disabled", background="#FFF1CF")
+        self.revealed.append(index)
+        if len(self.revealed) == 1:
+            return
+        self.moves += 1
+        first, second = self.revealed
+        if self.cards[first] == self.cards[second]:
+            for i in self.revealed:
+                self.tiles[i].config(background="#CAECDD")
+            self.pairs += 1
+            self.revealed.clear()
+        else:
+            self._hide_id = self.after(800, self._hide_cards)
+        self._update_score()
+
+    def _update_score(self):
+        title = "¡Completado!" if self.pairs == 8 else f"Parejas {self.pairs} de 8"
+        self.status.config(text=f"{title}  ·  Intentos {self.moves}")
+
+    def _hide_cards(self):
+        self._hide_id = None
+        for index in self.revealed:
+            self.tiles[index].config(text="?", state="normal", background="#E6EDF7")
+        self.revealed.clear()
+
+    def _cancel_hide(self):
+        if self._hide_id is not None:
+            self.after_cancel(self._hide_id)
+            self._hide_id = None
+
+    def destroy(self):
+        self._cancel_hide()
+        super().destroy()
+
+
+class PongRound:
+    title = "Pong"
+    instructions = "Flechas ↑ ↓ para mover tu pala. Gana el primero en llegar a 5 puntos. P para pausar."
+    keys = ("Up", "Down")
+    width, height = 480, 320
+    half_paddle = 35
+
+    def __init__(self):
+        self.player = self.rival = self.height / 2
+        self.points = [0, 0]
+        self._serve(1)
+
+    def _serve(self, direction):
+        self.x, self.y = self.width / 2, self.height / 2
+        self.dx, self.dy = direction * 4.2, random.choice((-2.1, 2.1))
+
+    def advance(self, held):
+        def clamp(value):
+            return min(self.height - self.half_paddle, max(self.half_paddle, value))
+
+        self.player = clamp(self.player + 6 * (("Down" in held) - ("Up" in held)))
+        target = self.y if self.dx > 0 else self.height / 2
+        self.rival = clamp(self.rival + min(3.3, max(-3.3, target - self.rival)))
+        previous = self.x
+        self.x += self.dx
+        self.y += self.dy
+        if self.y < 6 or self.y > self.height - 6:
+            self.y = min(self.height - 6, max(6, self.y))
+            self.dy = -self.dy
+
+        for line, paddle, direction in ((33, self.player, 1), (self.width - 33, self.rival, -1)):
+            crossed = (previous - line) * direction >= 0 > (self.x - line) * direction
+            if crossed and abs(self.y - paddle) <= self.half_paddle + 6:
+                self.x = line
+                self.dx = direction * min(8, abs(self.dx) + 0.3)
+                self.dy = (self.y - paddle) / self.half_paddle * 4.5
+                break
+        if self.x < -6 or self.x > self.width + 6:
+            scorer = int(self.x < 0)
+            self.points[scorer] += 1
+            if self.points[scorer] == 5:
+                return "¡Ganaste!" if scorer == 0 else "Ganó el rival"
+            self._serve(-1 if scorer else 1)
+        return None
+
+    def score_text(self):
+        return f"Tú {self.points[0]}  ·  Rival {self.points[1]}"
+
+    def draw(self, canvas):
+        canvas.create_line(self.width / 2, 0, self.width / 2, self.height,
+                           fill="#425A73", dash=(4, 6), tags="objects")
+        for x, y, color in ((16, self.player, "#87E7BE"), (self.width - 27, self.rival, "#FFAB8C")):
+            canvas.create_rectangle(x, y - self.half_paddle, x + 11, y + self.half_paddle,
+                                    fill=color, width=0, tags="objects")
+        canvas.create_oval(self.x - 6, self.y - 6, self.x + 6, self.y + 6,
+                           fill="#F3F8FE", width=0, tags="objects")
+
+
+class InvadersRound:
+    title = "Space Invaders"
+    instructions = "Flechas ← → para moverte, Espacio para disparar y P para pausar."
+    keys = ("Left", "Right", "space")
+    width, height = 480, 360
+    shield_tile = 8
+    bonus_points = 50
+
+    def __init__(self):
+        self.player = self.width / 2
+        self.ship_y = self.height - 24
+        self.score = 0
+        self.lives = 3
+        self.wave = 1
+        self.cooldown = 0
+        self._new_wave()
+
+    def _new_wave(self):
+        self.enemies = [(74 + x * 47, 48 + y * 28) for y in range(3) for x in range(8)]
+        shape = (" ### ", "#####", "## ##")
+        self.shields = {
+            (center + (col - 2) * self.shield_tile, self.ship_y - 58 + row * self.shield_tile)
+            for center in (78, 186, 294, 402)
+            for row, pattern in enumerate(shape)
+            for col, tile in enumerate(pattern)
+            if tile == "#"
+        }
+        self.direction = 1
+        self.shots = []
+        self.enemy_shots = []
+        self.ticks = 0
+        self.bonus_x = None
+
+    def _hit_shield(self, x, y):
+        half = self.shield_tile / 2
+        tile = next((tile for tile in self.shields
+                     if -half <= x - tile[0] < half and -half <= y - tile[1] < half), None)
+        if tile is None:
+            return False
+        self.shields.remove(tile)
+        return True
+
+    def advance(self, held):
+        self.player = min(self.width - 17, max(17, self.player + 5 * (("Right" in held) - ("Left" in held))))
+        self.cooldown = max(0, self.cooldown - 1)
+        if "space" in held and not self.cooldown:
+            self.shots.append((self.player, self.ship_y - 13))
+            self.cooldown = 10
+
+        step = self.direction * min(3.4, 0.85 + self.wave * 0.2)
+        if any(not 19 <= x + step <= self.width - 19 for x, _ in self.enemies):
+            self.direction *= -1
+            self.enemies = [(x, y + 13) for x, y in self.enemies]
+        else:
+            self.enemies = [(x + step, y) for x, y in self.enemies]
+
+        self.ticks += 1
+        if self.ticks % 320 == 0:
+            self.bonus_x = -16
+        if self.bonus_x is not None:
+            self.bonus_x += 3
+            if self.bonus_x > self.width + 16:
+                self.bonus_x = None
+
+        active_shots = []
+        for x, y in self.shots:
+            y -= 8
+            if self._hit_shield(x, y):
+                continue
+            if self.bonus_x is not None and abs(self.bonus_x - x) <= 16 and abs(y - 22) <= 7:
+                self.score += self.bonus_points
+                self.bonus_x = None
+                continue
+            hit = next((enemy for enemy in self.enemies if abs(enemy[0] - x) <= 13 and abs(enemy[1] - y) <= 9), None)
+            if hit is not None:
+                self.enemies.remove(hit)
+                self.score += 10
+            elif y > 0:
+                active_shots.append((x, y))
+        self.shots = active_shots
+        if self.enemies and self.ticks % max(22, 58 - 4 * self.wave) == 0:
+            x, y = random.choice(self.enemies)
+            self.enemy_shots.append((x, y + 10))
+        self.enemy_shots = [
+            (x, y + 4) for x, y in self.enemy_shots
+            if y + 4 < self.height and not self._hit_shield(x, y + 4)
+        ]
+        if any(abs(x - self.player) < 15 and abs(y - self.ship_y) < 11 for x, y in self.enemy_shots):
+            self.lives -= 1
+            self.enemy_shots.clear()
+        if not self.lives or any(y > self.ship_y - 18 for _, y in self.enemies):
+            return "Fin de la partida"
+        if not self.enemies:
+            self.wave += 1
+            self._new_wave()
+        return None
+
+    def score_text(self):
+        return f"Puntos {self.score}  ·  Vidas {self.lives}  ·  Oleada {self.wave}"
+
+    def draw(self, canvas):
+        half = self.shield_tile / 2
+        for x, y in self.shields:
+            canvas.create_rectangle(x - half, y - half, x + half, y + half,
+                                    fill="#67D3AA", width=0, tags="objects")
+        if self.bonus_x is not None:
+            x = self.bonus_x
+            canvas.create_polygon(x - 17, 25, x - 12, 20, x - 7, 20, x - 5, 16, x + 5, 16,
+                                  x + 7, 20, x + 12, 20, x + 17, 25, x + 12, 28, x - 12, 28,
+                                  fill="#FF9986", tags="objects")
+        for x, y in self.enemies:
+            canvas.create_polygon(x - 13, y + 7, x - 13, y - 3, x - 9, y - 3, x - 9, y - 7,
+                                  x + 9, y - 7, x + 9, y - 3, x + 13, y - 3, x + 13, y + 7,
+                                  x + 8, y + 7, x + 8, y + 4, x - 8, y + 4, x - 8, y + 7,
+                                  fill="#C4ACF5", tags="objects")
+            for eye in (x - 5, x + 5):
+                canvas.create_rectangle(eye - 2, y - 3, eye + 2, y + 1,
+                                        fill="#30274E", width=0, tags="objects")
+        x, y = self.player, self.ship_y
+        canvas.create_polygon(x - 16, y + 9, x - 16, y + 1, x - 7, y + 1, x - 3, y - 11,
+                              x + 3, y - 11, x + 7, y + 1, x + 16, y + 1, x + 16, y + 9,
+                              fill="#A6D9FF", tags="objects")
+        for shots, color in ((self.shots, "#F3F8FE"), (self.enemy_shots, "#FF876A")):
+            for x, y in shots:
+                canvas.create_line(x, y - 4, x, y + 4, fill=color, width=3, tags="objects")
+
+
+class ArcadeActionPanel(ttk.Frame):
+    """Controles y temporizador compartidos por Pong y Space Invaders."""
+    def __init__(self, master, factory):
+        super().__init__(master)
+        self.factory = factory
+        self.game = factory()
+        self.held = set()
+        self._tick_id = None
+        self.mode = "ready"
+        self.message = "Pulsa Enter o Jugar"
+        _game_heading(self, self.game.title, self.game.instructions)
+        self.score = ttk.Label(self, style="Section.TLabel")
+        self.score.pack(anchor="e", pady=(0, 5))
+        self.canvas = tk.Canvas(self, width=self.game.width, height=self.game.height, background="#182638",
+                                highlightthickness=0, takefocus=True)
+        self.canvas.pack()
+        self.canvas.bind("<Map>", lambda _event: self.canvas.focus_set())
+        self.canvas.bind("<Button-1>", lambda _event: self.canvas.focus_set())
+        for key in self.game.keys:
+            self.canvas.bind(f"<KeyPress-{key}>", lambda _event, k=key: self.held.add(k))
+            self.canvas.bind(f"<KeyRelease-{key}>", lambda _event, k=key: self.held.discard(k))
+        self.canvas.bind("<FocusOut>", lambda _event: self.held.clear())
+        self.canvas.bind("<Return>", self._start)
+        self.canvas.bind("<KeyPress-p>", self._toggle_pause)
+        footer = ttk.Frame(self)
+        footer.pack(fill="x", pady=(10, 0))
+        self.play_button = ttk.Button(footer, style="Primary.TButton", command=self._start)
+        self.play_button.pack(side="left")
+        self.pause_button = ttk.Button(footer, command=self._toggle_pause)
+        self.pause_button.pack(side="left", padx=8)
+        self._draw()
+        self.canvas.focus_set()
+
+    def _start(self, _event=None):
+        self._cancel_tick()
+        self.held.clear()
+        self.game = self.factory()
+        self.mode = "playing"
+        self._draw()
+        self._tick_id = self.after(24, self._tick)
+        self.canvas.focus_set()
+        return "break"
+
+    def _toggle_pause(self, _event=None):
+        if self.mode == "playing":
+            self._cancel_tick()
+            self.held.clear()
+            self.mode = "paused"
+            self.message = "En pausa · Pulsa P para continuar"
+        elif self.mode == "paused":
+            self.mode = "playing"
+            self._tick_id = self.after(24, self._tick)
+        self._draw()
+        self.canvas.focus_set()
+        return "break"
+
+    def _tick(self):
+        self._tick_id = None
+        result = self.game.advance(self.held)
+        if result:
+            self.mode = "finished"
+            self.message = result
+        self._draw()
+        if self.mode == "playing":
+            self._tick_id = self.after(24, self._tick)
+
+    def _draw(self):
+        self.canvas.delete("objects")
+        self.game.draw(self.canvas)
+        if self.mode != "playing":
+            x, y = self.game.width / 2, self.game.height / 2
+            self.canvas.create_rectangle(x - 173, y - 26, x + 173, y + 26, fill="#142133", outline="#375169", tags="objects")
+            self.canvas.create_text(x, y, text=self.message, fill="#FFFFFF", font=("Segoe UI", 13, "bold"), tags="objects")
+        self.score.config(text=self.game.score_text())
+        self.play_button.config(text="Jugar" if self.mode == "ready" else "Reiniciar")
+        self.pause_button.config(text="Continuar" if self.mode == "paused" else "Pausar",
+                                 state="normal" if self.mode in {"playing", "paused"} else "disabled")
+
+    def _cancel_tick(self):
+        if self._tick_id is not None:
+            self.after_cancel(self._tick_id)
+            self._tick_id = None
+
+    def destroy(self):
+        self._cancel_tick()
+        super().destroy()
+
+
+class GamesWindow(tk.Toplevel):
+    def __init__(self, master):
+        super().__init__(master)
+        self.withdraw()
+        self.title("Minijuegos — Mercado House")
+        self.configure(background=UI["background"])
+        self.resizable(False, False)
+        self.content = None
+        self.in_game = False
+        self.bind("<Escape>", self._back)
+        self._show_games()
+        self.deiconify()
+
+    def _center_on_owner(self):
+        self.update_idletasks()
+        owner = self.master.winfo_toplevel()
+        x = owner.winfo_rootx() + (owner.winfo_width() - self.winfo_reqwidth()) // 2
+        y = owner.winfo_rooty() + (owner.winfo_height() - self.winfo_reqheight()) // 2
+        self.geometry(f"+{x}+{y}")
+
+    def _new_content(self):
+        if self.content is not None:
+            self.content.destroy()
+        self.content = ttk.Frame(self, padding=16)
+        self.content.pack(fill="both", expand=True)
+
+    def _show_games(self):
+        self.in_game = False
+        self._new_content()
+        _game_heading(self.content, "Minijuegos", "Elige una partida para pasar el rato.")
+        grid = ttk.Frame(self.content)
+        grid.pack(fill="x")
+        for column in range(2):
+            grid.columnconfigure(column, weight=1, uniform="games")
+        games = (
+            ("Snake", SnakePanel),
+            ("Pong", lambda parent: ArcadeActionPanel(parent, PongRound)),
+            ("Memoria", MemoryPanel),
+            ("Space Invaders", lambda parent: ArcadeActionPanel(parent, InvadersRound)),
+        )
+        for index, (name, factory) in enumerate(games):
+            button = ttk.Button(grid, text=name, width=20, command=lambda make=factory: self._open_game(make))
+            button.grid(row=index // 2, column=index % 2, sticky="ew", padx=4, pady=4)
+        self._center_on_owner()
+
+    def _open_game(self, factory):
+        self.in_game = True
+        self._new_content()
+        ttk.Button(self.content, text="← Minijuegos", command=self._show_games).pack(anchor="w", pady=(0, 10))
+        factory(self.content).pack(fill="both", expand=True)
+        self._center_on_owner()
+
+    def _back(self, _event=None):
+        if self.in_game:
+            self._show_games()
+        else:
+            self.destroy()
+        return "break"
+
+
 class StartView(ttk.Frame):
     """Inicio con tareas principales y fuentes de datos claramente separadas."""
     def __init__(
@@ -2602,8 +3011,8 @@ class StartView(ttk.Frame):
         footer = ttk.Frame(self, style="Home.TFrame")
         footer.pack(side="bottom", fill="x", padx=18, pady=(7, 12))
         ttk.Label(footer, text=f"Versión {APP_VERSION}", style="HomeMuted.TLabel").pack(side="right")
-        self._snake_window = None
-        ttk.Button(footer, text="Aburrido", command=self._open_snake).pack(side="right", padx=(0, 14))
+        self._games_window = None
+        ttk.Button(footer, text="Aburrido", command=self._open_games).pack(side="right", padx=(0, 14))
         self.btn_cargar_auto = ttk.Button(footer, text="Actualizar todos los datos",
                                           command=lambda: on_auto_load(self.selected_sources()),
                                           style="HomeTeal.TButton")
@@ -2682,13 +3091,12 @@ class StartView(ttk.Frame):
         self.update_status.pack(fill="x", pady=(4, 0))
         self.update_bar = ttk.Progressbar(self.update_panel, mode="indeterminate")
 
-    def _open_snake(self):
-        if self._snake_window is None or not self._snake_window.winfo_exists():
-            self._snake_window = SnakeWindow(self)
+    def _open_games(self):
+        if self._games_window is None or not self._games_window.winfo_exists():
+            self._games_window = GamesWindow(self)
         else:
-            self._snake_window.deiconify()
-            self._snake_window.lift()
-            self._snake_window.canvas.focus_set()
+            self._games_window.deiconify()
+            self._games_window.lift()
 
     def selected_sources(self):
         return tuple(key for key, choice in self.source_selection.items() if choice.get())
