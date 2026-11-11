@@ -39,7 +39,7 @@ from tkinter import ttk, messagebox
 
 GITHUB_REPO = "FoorKeM/buscador-de-codigos"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-LAUNCHER_VERSION = "1.0"
+LAUNCHER_VERSION = "1.1"
 
 APPDATA_DIR = Path(os.getenv("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")) / "BuscadorCodigos"
 VERSIONS_DIR = APPDATA_DIR / "versions"
@@ -232,7 +232,7 @@ def main() -> None:
     except Exception as exc:
         network_error = exc
 
-    if latest and latest.get("url") and latest["tag"] != cached_tag:
+    if latest and latest.get("url") and (latest["tag"] != cached_tag or cached_exe is None):
         _show_progress_and_install(latest, cached_exe)
         return
 
