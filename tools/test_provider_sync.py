@@ -17,6 +17,17 @@ def write_categories(path, rows):
 
 
 class ProviderSyncTests(unittest.TestCase):
+    def test_el_detalle_del_error_permanece_mientras_actualiza_otra_fuente(self):
+        view = object.__new__(app.StartView)
+        view.source_failure_details = {}
+        view.update_failures = mock.Mock()
+        view.update_status = mock.Mock()
+        view.report_source_failure("articulos", app.AutoDownloadError("Falló al esperar Exportar."))
+        view.report_source_update("Descargando packs…")
+        self.assertIn("Listado de artículos", view.update_failures.config.call_args.kwargs["text"])
+        self.assertIn("Exportar", view.update_failures.config.call_args.kwargs["text"])
+        view.update_failures.pack_forget.assert_not_called()
+
     def test_recuerda_la_seleccion_y_alterna_marcar_y_desmarcar_todas(self):
         view = object.__new__(app.StartView)
         view.btn_cargar_auto = mock.Mock()
@@ -85,26 +96,21 @@ class ProviderSyncTests(unittest.TestCase):
         portal.is_closed.return_value = False
         erp = mock.Mock(url=app.ERP_DASHBOARD_URL)
         erp.is_closed.return_value = False
-        erp.get_by_text.return_value.count = mock.AsyncMock(return_value=1)
+        erp.get_by_text.return_value.filter.return_value.count = mock.AsyncMock(return_value=1)
         context = SimpleNamespace(pages=[portal], new_page=mock.AsyncMock())
-        title = portal.get_by_text.return_value.filter.return_value.last
-        title.is_visible = mock.AsyncMock(return_value=True)
-        card = title.locator.return_value
-        card.count = mock.AsyncMock(return_value=1)
-        card.click = mock.AsyncMock(side_effect=lambda **_: context.pages.append(erp))
-        with mock.patch.object(app, "_auto_pause", mock.AsyncMock()):
+        with mock.patch.object(app, "_auto_pause", mock.AsyncMock()), \
+             mock.patch.object(app, "_auto_click_portal_module",
+                               mock.AsyncMock(side_effect=lambda *_: context.pages.append(erp))) as click:
             self.assertIs(asyncio.run(app._auto_open_erp(context, portal)), erp)
-        card.click.assert_awaited_once()
+        click.assert_awaited_once_with(portal, "ERP Digital")
         context.new_page.assert_not_awaited()
 
     def test_erp_usa_ruta_directa_si_el_portal_no_avanza(self):
         portal = mock.Mock(url="https://portal.defontana.com/dashboard")
         portal.is_closed.return_value = False
-        title = portal.get_by_text.return_value.filter.return_value.last
-        title.is_visible = mock.AsyncMock(return_value=False)
         erp = mock.Mock(url=app.ERP_ARTICULOS_URL, goto=mock.AsyncMock())
         erp.is_closed.return_value = False
-        erp.get_by_text.return_value.count = mock.AsyncMock(return_value=1)
+        erp.get_by_text.return_value.filter.return_value.count = mock.AsyncMock(return_value=1)
         context = SimpleNamespace(pages=[portal])
 
         async def new_page():
@@ -124,6 +130,8 @@ class ProviderSyncTests(unittest.TestCase):
 
             with mock.patch.object(loop, "time", side_effect=lambda: start + elapsed), \
                  mock.patch.object(app, "_auto_pause", side_effect=pause), \
+                 mock.patch.object(app, "_auto_click_portal_module",
+                                   mock.AsyncMock(side_effect=app.AutoDownloadError("Módulo no disponible"))), \
                  mock.patch.object(app, "_auto_log"):
                 return await app._auto_open_erp(context, portal, direct_url=app.ERP_ARTICULOS_URL)
 
@@ -143,7 +151,7 @@ class ProviderSyncTests(unittest.TestCase):
         erp = object()
         events = []
 
-        async def download_pos(_pos, section, filename, folder):
+        async def download_pos(_pos, section, filename, folder, **_):
             self.assertIs(_pos, pos)
             if section == "Packs":
                 raise ValueError("Packs inválidos")
@@ -151,7 +159,7 @@ class ProviderSyncTests(unittest.TestCase):
             source.write_bytes(b"articulos")
             return source
 
-        async def download_prices(_erp, folder):
+        async def download_prices(_erp, folder, **_):
             self.assertIs(_erp, erp)
             source = folder / "precios.xls"
             source.write_bytes(b"precios")
@@ -168,6 +176,7 @@ class ProviderSyncTests(unittest.TestCase):
                  mock.patch.object(app, "_auto_new_page", mock.AsyncMock(return_value=(browser, object(), object()))), \
                  mock.patch.object(app, "_auto_login_tivendo", mock.AsyncMock()) as login, \
                  mock.patch.object(app, "_auto_ensure_mercado_house", mock.AsyncMock()), mock.patch.object(app, "_auto_log"), \
+                 mock.patch.object(app, "_auto_pause", mock.AsyncMock()), \
                  mock.patch.object(app, "_auto_open_pos", mock.AsyncMock(return_value=pos)), \
                  mock.patch.object(app, "_auto_open_erp", mock.AsyncMock(return_value=erp)), \
                  mock.patch.object(app, "_auto_download_from_pos", side_effect=download_pos), \
@@ -260,6 +269,7 @@ class ProviderSyncTests(unittest.TestCase):
                 with mock.patch.dict(sys.modules, {"playwright": ModuleType("playwright"), "playwright.async_api": module}), \
                      mock.patch.object(app, "APP_DATA_DIR", staging_root), \
                      mock.patch.object(app, "_auto_log"), \
+                     mock.patch.object(app, "_auto_pause", mock.AsyncMock()), \
                      mock.patch.object(app, "_auto_new_page", mock.AsyncMock(return_value=(browser, object(), object()))), \
                      mock.patch.object(app, "_auto_login_tivendo", mock.AsyncMock()), \
                      mock.patch.object(app, "_auto_ensure_mercado_house", mock.AsyncMock()) as verify_company, \
@@ -272,11 +282,11 @@ class ProviderSyncTests(unittest.TestCase):
                         self.assertIn("vacío", str(errors["proveedores"]))
                     self.assertTrue(verify_company.await_args.kwargs["require_confirmation"])
                 erp.goto.assert_awaited_with(app.ERP_ARTICULOS_URL, wait_until="domcontentloaded", timeout=30000)
-                self.assertEqual(len(downloads), 1)
+                self.assertEqual(len(downloads), 1 if rows else 3)
                 self.assertEqual(list(staging_root.iterdir()), [])
         self.assertEqual(browser.close.await_count, 2)
-        self.assertEqual(export.click.await_count, 2)
-        self.assertEqual(export.dispose.await_count, 2)
+        self.assertEqual(export.click.await_count, 4)
+        self.assertEqual(export.dispose.await_count, 4)
         inventory.evaluate_handle.assert_awaited_with(app._CATEGORY_EXPORT_CONTROL)
         outer.evaluate_handle.assert_not_called()
 
@@ -303,7 +313,10 @@ class ProviderSyncTests(unittest.TestCase):
 
     def test_reintenta_abrir_el_maestro_una_vez_antes_de_descargar(self):
         export = mock.Mock(click=mock.AsyncMock(), dispose=mock.AsyncMock())
-        download = mock.Mock(save_as=mock.AsyncMock())
+        async def save(path):
+            Path(path).write_bytes(b"categories fixture")
+
+        download = mock.Mock(save_as=mock.AsyncMock(side_effect=save))
         erp = mock.Mock(reload=mock.AsyncMock(), set_viewport_size=mock.AsyncMock())
 
         @asynccontextmanager
@@ -311,10 +324,11 @@ class ProviderSyncTests(unittest.TestCase):
             yield SimpleNamespace(value=asyncio.sleep(0, result=download))
 
         erp.expect_download = expect_download
-        with mock.patch.object(app, "_auto_open_article_master", mock.AsyncMock()) as open_master, \
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch.object(app, "_auto_open_article_master", mock.AsyncMock()) as open_master, \
              mock.patch.object(app, "_auto_find_category_export", side_effect=[app.ArticleMasterNotReady(), export]) as find, \
              mock.patch.object(app, "leer_proveedores_defontana", return_value={7: "Proveedor"}) as read:
-            data = asyncio.run(app._auto_download_provider_categories(erp, Path("temporal"), mock.Mock()))
+            data = asyncio.run(app._auto_download_provider_categories(erp, Path(directory), mock.Mock()))
 
         self.assertEqual(data, {7: "Proveedor"})
         self.assertEqual(open_master.await_count, 2)

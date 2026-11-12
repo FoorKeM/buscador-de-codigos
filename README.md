@@ -61,7 +61,7 @@ En **Cambios masivos de precios** se usa el listado de artículos guardado para 
 
 La revisión muestra el artículo y el precio nuevo que ingresó la persona. Los rangos opcionales permiten preparar las cantidades y el segundo precio de la importación. No se consulta ni compara un precio actual del catálogo. El Excel para Tivendo conserva sus siete columnas y exporta solo los datos preparados.
 
-En el paso **Pegar precios**, copia la columna de barras de Excel y pégala en **Barras internas**; después copia la columna de precios y pégala en **Precios 1**. Puedes pegar diez o más productos en cada operación, sin agregarlos uno por uno. **Ctrl+V reemplaza únicamente la columna elegida** y conserva las filas vacías intermedias para no desplazar los precios a otro producto.
+En el paso **Pegar precios**, copia la columna de barras de Excel y pégala en **Barras internas**; después copia la columna de precios y pégala en **Precios 1**. Puedes pegar diez o más productos en cada operación, sin agregarlos uno por uno. **Ctrl+V pega desde la fila del cursor** y conserva las filas vacías intermedias para no desplazar los precios a otro producto. Pulsa **Enter** para bajar y continuar agregando otro bloque; **Ctrl+A** selecciona toda la columna para reemplazarla.
 
 El **primer rango siempre está habilitado**: **Rango inicial 1** y **Rango final 1** aparecen entre barras y precios. Al pegar las barras, si ambos campos están vacíos, se completan con `1` y `1000`; puedes pegar tus propias cantidades encima. Las cantidades admiten valores mayores que cero y hasta **1000**, incluyendo `0,001` para kilos.
 
@@ -70,6 +70,14 @@ Las columnas tienen un ancho intermedio y se presentan centradas, sin estirarse 
 **+ Segundo rango y precio** muestra **Rango inicial 2 | Rango final 2 | Precios 2**. También puedes pegar cada una de estas columnas por separado. Si un producto no tiene segundo rango, sus tres campos se dejan vacíos. Los rangos no pueden superponerse. Al desactivar el segundo rango, sus datos no se exportan.
 
 El pegado se realiza **una columna por vez**, en el cuadro que elijas. Si copias varias columnas juntas, se pide copiar una sola y se conservan los datos ya ingresados. No hay botón ni función de pegado de tablas completas. La vista previa permite revisar y editar antes de guardar. El archivo generado mantiene las siete columnas de Tivendo (`Código`, `RangoInicial1`, `RangoFinal1`, `Precio1`, `RangoInicial2`, `RangoFinal2`, `Precio2`).
+
+## Actualización v174
+
+La carga de artículos, packs, precios y proveedores muestra cada etapa de la descarga, reintenta hasta tres veces por fuente y permite **Cancelar actualización**. Las fuentes que terminan correctamente se conservan aunque otra falle; las que fallan mantienen sus datos anteriores.
+
+El acceso automático reconoce **Punto de Ventas** y **ERP Digital** por su nombre en el nuevo portal de Defontana. Si no aparecen entre los módulos recientes, busca en **Todos**. Reutiliza las pestañas abiertas y recupera las pantallas que quedan incompletas. La exportación de precios admite descarga directa o mediante una ventana temporal y espera a que termine el archivo antes de cerrarla.
+
+La tuerca de la esquina superior permite editar el acceso de Defontana utilizado por las descargas. Las actualizaciones se reciben mediante el lanzador habitual.
 
 ## Comprobación y límites
 

@@ -84,7 +84,7 @@ from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Dict, List, Optional
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import tkinter as tk
 import tkinter.font as tkfont
@@ -105,7 +105,7 @@ _RE_CODE_TOKEN = re.compile(r"[a-z0-9-]{3,}")  # valida cada trozo de codigo (le
 
 STRIPE_COLOR = "#F3F6FA"
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v167"
+APP_VERSION  = "v174"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -585,18 +585,25 @@ def load_auto_credentials() -> dict:
         pass
     return {"usuario": DEFAULT_TIVENDO_USUARIO, "password": ""}
 
-def save_auto_credentials(usuario: str, password: str):
+def save_auto_credentials(usuario: str, password: str) -> bool:
+    path = AUTO_CREDENTIALS_PATH
+    temporary = None
     try:
-        AUTO_CREDENTIALS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(AUTO_CREDENTIALS_PATH, "w", encoding="utf-8") as f:
-            json.dump(
-                {"usuario": usuario, "password": password},
-                f,
-                ensure_ascii=False,
-                indent=2,
-            )
-    except Exception:
-        pass
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=".credenciales-", suffix=".tmp", delete=False) as f:
+            temporary = Path(f.name)
+            json.dump({"usuario": usuario, "password": password}, f, ensure_ascii=False, indent=2)
+        os.replace(temporary, path)
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 def load_auto_last_load() -> dict:
     try:
@@ -710,7 +717,9 @@ def _auto_log_path() -> Path:
 def _auto_log(message: str):
     try:
         with open(_auto_log_path(), "a", encoding="utf-8") as f:
-            f.write(message + "\n")
+            prefix = f"[{datetime.now().isoformat(timespec='seconds')}] [{APP_VERSION} pid={os.getpid()}] "
+            for line in str(message).splitlines():
+                f.write(prefix + line + "\n")
     except Exception:
         pass
 
@@ -723,18 +732,27 @@ async def _auto_wait_light(page, timeout: int = 15000):
 async def _auto_pause(seconds: float = 0.2):
     await asyncio.sleep(seconds)
 
-async def _auto_retry(name: str, action, attempts: int = 3, wait: float = 0.8):
+async def _auto_cancel_on_event(cancel_event, task):
+    while not cancel_event.is_set():
+        await asyncio.sleep(0.1)
+    task.cancel()
+
+async def _auto_retry(name: str, action, attempts: int = 3, wait: float = 0.8, progress_cb=None):
     start = asyncio.get_event_loop().time()
     last_error = None
     for attempt in range(1, attempts + 1):
         try:
             return await action()
+        except TivendoLoginError:
+            raise
         except Exception as exc:
             last_error = exc
             if attempt >= attempts:
                 break
             _auto_log(f"Reintentando {name} ({attempt + 1}/{attempts})")
-            await asyncio.sleep(wait)
+            if progress_cb:
+                progress_cb(f"Falló al {name}. Reintentando… (intento {attempt + 1} de {attempts})")
+            await _auto_pause(wait)
     elapsed = asyncio.get_event_loop().time() - start
     # Envolvemos el error final con cuantos intentos hizo y cuanto tardo, para
     # que el mensaje de error que ve el usuario ya no se vea IDENTICO a un
@@ -788,21 +806,69 @@ async def _auto_new_page(playwright, download_dir: Path = AUTO_DOWNLOAD_DIR):
     page = await context.new_page()
     return browser, context, page
 
-async def _auto_click_capture_page(context, page, locator, timeout: int = 3500):
+async def _auto_click_portal_module(page, name: str):
+    """Localiza la tarjeta por su nombre, en Recientes o en Todos."""
     try:
         from playwright.async_api import TimeoutError as PlaywrightTimeoutError
     except Exception:
         PlaywrightTimeoutError = TimeoutError
 
-    try:
-        async with context.expect_page(timeout=timeout) as page_info:
-            await _auto_retry("click que abre módulo", locator.click)
-        new_page = await page_info.value
-        await _auto_wait_light(new_page)
-        return new_page
-    except PlaywrightTimeoutError:
-        await _auto_wait_light(page)
-        return page
+    names = [name]
+    if name == "Punto de Ventas":
+        names.append("Punto de Venta")
+    mark_card = r"""(names) => {
+        const normalize = value => (value || '').normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ')
+            .trim().toLocaleLowerCase('es');
+        const options = names.map(normalize);
+        const labels = [...document.querySelectorAll(
+            'a, button, [role="button"], h1, h2, h3, h4, p, div, span'
+        )].filter(element => {
+            if (!options.includes(normalize(element.innerText || element.textContent))) return false;
+            const style = getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== 'none' && style.visibility !== 'hidden'
+                && rect.width > 0 && rect.height > 0;
+        });
+        const label = labels[labels.length - 1];
+        if (!label) return false;
+        let target = label.closest('a, button, [role="button"], mat-card, .mat-card, .mat-mdc-card');
+        if (!target) {
+            target = label;
+            let ancestor = label.parentElement;
+            for (let depth = 0; depth < 4 && ancestor && ancestor !== document.body; depth++) {
+                if (getComputedStyle(ancestor).cursor === 'pointer' || ancestor.onclick) {
+                    target = ancestor;
+                    break;
+                }
+                ancestor = ancestor.parentElement;
+            }
+        }
+        document.querySelectorAll('[data-buscador-module]')
+            .forEach(element => element.removeAttribute('data-buscador-module'));
+        target.setAttribute('data-buscador-module', names[0]);
+        return true;
+    }"""
+
+    async def find_card():
+        try:
+            await page.wait_for_function(mark_card, arg=names, timeout=4000)
+            return True
+        except PlaywrightTimeoutError:
+            return False
+
+    if not await find_card():
+        _auto_log(f"Buscando {name} en Todos los módulos")
+        try:
+            await page.get_by_text("Todos", exact=True).filter(visible=True).first.click(timeout=4000)
+        except PlaywrightTimeoutError:
+            pass
+        if not await find_card():
+            raise AutoDownloadError(
+                f"No se encontró {name} en Módulos recientes ni en Todos del portal de Defontana. "
+                "Comprueba que tu usuario tenga acceso al módulo y que conserve ese nombre."
+            )
+    await page.locator("[data-buscador-module]").click(timeout=8000)
 
 async def _auto_login_tivendo(page, usuario: str, password: str):
     _auto_log("Abriendo login Tivendo")
@@ -924,16 +990,10 @@ async def _auto_ensure_mercado_house(page, usuario: str, password: str, *, requi
         raise AutoDownloadError(f"No se pudo confirmar MERCADO HOUSE. Empresa actual: {new_company or 'desconocida'}")
 
 async def _auto_open_pos(context, page):
-    pos_page = await _auto_click_capture_page(
-        context,
-        page,
-        page.get_by_text("Punto de Ventas"),
+    return await _auto_open_defontana_module(
+        context, page, "Punto de Ventas", "tivendoapp.defontana.com",
+        re.compile(r"^Art[ií]culos$", re.I),
     )
-    await _auto_retry(
-        "esperar menú 'Artículos' en Punto de Ventas",
-        lambda: pos_page.locator("text=Artículos").first.wait_for(state="visible", timeout=25000),
-    )
-    return pos_page
 
 async def _auto_open_pos_section(pos_page, section_link, menu_text: str = "Artículos", timeout: int = 15000):
     """Abre una sección del menú "Artículos" en el POS de Tivendo. Solo hace
@@ -946,63 +1006,146 @@ async def _auto_open_pos_section(pos_page, section_link, menu_text: str = "Artí
         await pos_page.locator(f"text={menu_text}").first.click()
     await section_link.wait_for(state="visible", timeout=timeout)
 
-async def _auto_download_from_pos(pos_page, section_name: str, fallback_name: str, download_dir: Path) -> Path:
-    section_link = pos_page.get_by_role("link", name=section_name, exact=True)
-    await _auto_retry(
-        f"abrir sección '{section_name}' en Artículos",
-        lambda: _auto_open_pos_section(pos_page, section_link),
-        attempts=4,
-        wait=1.5,
-    )
-    await section_link.click()
-    await _auto_retry(
-        "esperar botón 'Exportar'",
-        lambda: pos_page.get_by_role("button", name="Exportar").wait_for(state="visible", timeout=30000),
-    )
+def _auto_page_location(page):
+    url = urlsplit(page.url)
+    location = f"{url.hostname or ''}{url.path}"
+    route = url.fragment.split("?", 1)[0]
+    if route.startswith("/"):
+        location += "#" + route
+    return location
 
-    async with pos_page.expect_download(timeout=300000) as download_info:
-        await pos_page.get_by_role("button", name="Exportar").click()
-    download = await download_info.value
-    file_name = download.suggested_filename or fallback_name
-    target = Path(download_dir) / file_name
-    await download.save_as(str(target))
-    if not target.exists():
-        raise AutoDownloadError(f"No se encontró el archivo descargado: {target}")
-    return target
+
+async def _auto_navigation_diagnostic(page, stage):
+    """Registra la ubicación y controles visibles, sin leer campos de acceso."""
+    try:
+        location = _auto_page_location(page)
+        buttons = await page.get_by_role("button").all_text_contents()
+        headings = await page.get_by_role("heading").all_text_contents()
+        controls = ", ".join(" ".join(text.split())[:70] for text in buttons[:12])
+        titles = ", ".join(" ".join(text.split())[:70] for text in headings[:6])
+        _auto_log(f"Diagnóstico de navegación · {stage} · Pantalla {location} · Títulos {titles} · Botones {controls}")
+    except Exception:
+        _auto_log(f"No se pudo leer el diagnóstico de navegación en la etapa {stage}")
+
+
+async def _auto_download_from_pos(pos_page, section_name: str, fallback_name: str, download_dir: Path,
+                                  *, progress_cb=None) -> Path:
+    report = progress_cb or _auto_log
+    stage = "abrir el menú de Artículos"
+
+    def step(text):
+        nonlocal stage
+        stage = text
+        report(f"{section_name} · {text}…")
+
+    try:
+        step("Abrir el menú de Artículos")
+        section_link = pos_page.get_by_role("link", name=section_name, exact=True)
+        await _auto_retry(
+            f"abrir sección '{section_name}' en Artículos",
+            lambda: _auto_open_pos_section(pos_page, section_link),
+            attempts=4,
+            wait=1.5,
+        )
+        href = await section_link.get_attribute("href")
+        destination = urljoin(pos_page.url, href) if href else ""
+        if urlsplit(destination).hostname != "tivendoapp.defontana.com":
+            destination = ""
+        export = pos_page.get_by_role("button", name="Exportar").filter(visible=True).first
+        step("Entrar en la pantalla del listado" if section_name != "Packs" else "Entrar en la pantalla de packs")
+        await section_link.click()
+        try:
+            if destination:
+                await pos_page.wait_for_url(destination, timeout=15000)
+            step("Esperar el botón Exportar")
+            await export.wait_for(state="visible", timeout=20000)
+        except Exception:
+            if not destination:
+                raise
+            step("Volver a abrir la pantalla porque no apareció Exportar")
+            await _auto_navigation_diagnostic(pos_page, stage)
+            await pos_page.goto(destination, wait_until="domcontentloaded", timeout=30000)
+            step("Esperar el botón Exportar después de reabrir")
+            await export.wait_for(state="visible", timeout=30000)
+
+        step("Pulsar Exportar y esperar el archivo")
+        async with pos_page.expect_download(timeout=300000) as download_info:
+            await export.click()
+        download = await download_info.value
+        step("Guardar el archivo descargado")
+        file_name = download.suggested_filename or fallback_name
+        target = Path(download_dir) / file_name
+        await download.save_as(str(target))
+        if not target.is_file() or target.stat().st_size == 0:
+            raise AutoDownloadError("Defontana no entregó un archivo completo.")
+        report(f"{section_name} · Archivo recibido.")
+        return target
+    except Exception as exc:
+        await _auto_navigation_diagnostic(pos_page, stage)
+        detail = str(exc).split("Call log:", 1)[0].strip() or type(exc).__name__
+        raise AutoDownloadError(f"Falló en la etapa «{stage}». {detail}") from exc
 
 async def _auto_open_erp(context, page, *, direct_url=ERP_DASHBOARD_URL):
-    """Sigue la sesión hasta el ERP, aunque el portal abra otra pestaña."""
+    return await _auto_open_defontana_module(
+        context, page, "ERP Digital", "erp.defontana.com",
+        re.compile(r"^(Inventario|Ventas|Clientes y Productos|Listado de Documentos|Categor[ií]as|Maestro de Art[ií]culos)$", re.I),
+        direct_url=direct_url,
+    )
+
+async def _auto_open_defontana_module(context, page, name, expected_host, ready_text, *, direct_url=None):
+    """Confirma el módulo de destino en la misma pestaña o en una nueva."""
+    def at_destination(candidate):
+        location = urlsplit(candidate.url)
+        return (location.hostname == expected_host
+                and "/login" not in (location.path + location.fragment).lower())
+
     old_pages = set(context.pages) - {page}
-    clicked = set()
+    last_click = {}
     tried_direct = False
+    last_error = None
+    destination_seen = False
+    destination_page = None
+    seen_locations = set()
     loop = asyncio.get_running_loop()
     started = loop.time()
-    ready_text = re.compile(r"^(Inventario|Ventas|Clientes y Productos|Listado de Documentos|Categor[ií]as)$", re.I)
     while loop.time() - started < 45:
+        module_loading = any(
+            not tab.is_closed() and at_destination(tab)
+            for tab in context.pages
+        )
         for candidate in reversed(context.pages):
-            if candidate in old_pages or candidate.is_closed():
+            if candidate.is_closed():
                 continue
             host = urlsplit(candidate.url).hostname
             try:
-                if host == "erp.defontana.com" and await candidate.get_by_text(ready_text).count():
-                    return candidate
-                if host in {"portal.defontana.com", "tivendoapp.defontana.com"} and candidate not in clicked:
-                    title = candidate.get_by_text("ERP Digital", exact=True).filter(visible=True).last
-                    if await title.is_visible():
-                        clicked.add(candidate)
-                        card = title.locator(
-                            "xpath=ancestor-or-self::*[self::a or self::button or self::mat-card "
-                            "or @role='button' or @tabindex='0' "
-                            "or contains(concat(' ', normalize-space(@class), ' '), ' mat-card ') "
-                            "or contains(concat(' ', normalize-space(@class), ' '), ' mat-mdc-card ')][1]")
-                        await (card if await card.count() else title).click(timeout=4000)
-            except Exception:
+                location = _auto_page_location(candidate)
+                if location not in seen_locations:
+                    seen_locations.add(location)
+                    _auto_log(f"Abrir {name} · Ubicación {location}")
+                if at_destination(candidate):
+                    destination_seen = True
+                    destination_page = candidate
+                    if await candidate.get_by_text(ready_text).filter(visible=True).count():
+                        _auto_log(f"{name} confirmado; menú de trabajo visible")
+                        return candidate
+                    continue
+                if candidate in old_pages:
+                    continue
+                if (host in {"portal.defontana.com", "tivendoapp.defontana.com"}
+                        and host != expected_host
+                        and not module_loading
+                        and loop.time() - last_click.get(candidate, started - 8) >= 8):
+                    last_click[candidate] = loop.time()
+                    _auto_log(f"Seleccionando {name} en el portal de Defontana")
+                    await _auto_click_portal_module(candidate, name)
+            except Exception as exc:
                 # La pestaña puede cerrarse o navegar al completar la autenticación.
+                last_error = exc
                 continue
 
-        if not tried_direct and loop.time() - started >= 12:
+        if direct_url and not tried_direct and loop.time() - started >= 12:
             tried_direct = True
-            _auto_log("ERP sigue en el portal; intentando abrir la ruta directa con la misma sesión")
+            _auto_log(f"{name} sigue en el portal; intentando abrir la ruta directa con la misma sesión")
             fallback = await context.new_page()
             try:
                 await fallback.goto(direct_url, wait_until="commit", timeout=10000)
@@ -1010,7 +1153,18 @@ async def _auto_open_erp(context, page, *, direct_url=ERP_DASHBOARD_URL):
                 pass  # Una redirección puede interrumpir goto y continuar en otra pestaña.
         await _auto_pause(0.4)
 
-    raise AutoDownloadError("El portal de Defontana no abrió ERP Digital. Revisa que tu usuario tenga acceso al módulo.")
+    await _auto_navigation_diagnostic(destination_page or page, f"Abrir {name}")
+    if destination_seen:
+        raise AutoDownloadError(
+            f"Se abrió {name}, pero no apareció su menú de trabajo. "
+            "La aplicación de Defontana no terminó de cargar."
+        )
+    if isinstance(last_error, AutoDownloadError):
+        raise last_error
+    raise AutoDownloadError(
+        f"Defontana no terminó de abrir {name}. "
+        "Comprueba el acceso a ese módulo o vuelve a intentar la actualización."
+    )
 
 async def _auto_click_classic_sales_report(page):
     exact_links = page.get_by_role("link", name="Informes de Ventas", exact=True)
@@ -1107,16 +1261,43 @@ async def _auto_click_lista_precios_tab(page):
     await _auto_pause(0.5)
 
 async def _auto_get_price_report_frame(base_page):
-    limit = asyncio.get_event_loop().time() + 15
+    limit = asyncio.get_running_loop().time() + 30
     while asyncio.get_event_loop().time() < limit:
         for frame in base_page.frames:
             try:
-                if await frame.locator("input[type='radio']").count() > 0:
+                if (await frame.locator("input[type='radio']:visible").count() > 0
+                        and await frame.locator("select").count() > 0):
                     return frame
             except Exception:
-                pass
+                pass  # El ERP puede reemplazar el iframe mientras lo carga.
         await _auto_pause(0.3)
-    return base_page
+    raise AutoDownloadError("El ERP no terminó de mostrar el formulario de Lista de Precios.")
+
+
+async def _auto_open_price_report(page, step):
+    """Reutiliza la pantalla del informe y la recarga una vez si quedó incompleta."""
+    for attempt in range(2):
+        try:
+            step("Abrir Informes de Ventas")
+            tab = page.locator("text=Lista de Precios").last
+            if not await tab.is_visible():
+                await page.locator("text=Ventas").first.click()
+                await _auto_pause(0.2)
+                sales_items = page.locator("text=Ventas")
+                if await sales_items.count() >= 2:
+                    await sales_items.nth(1).click()
+                await _auto_pause(0.2)
+                await _auto_click_classic_sales_report(page)
+            step("Abrir la pestaña Lista de Precios")
+            await _auto_click_lista_precios_tab(page)
+            step("Esperar el formulario de Lista de Precios")
+            return await _auto_get_price_report_frame(page)
+        except Exception:
+            if attempt:
+                raise
+            step("Volver a abrir el informe porque no terminó de cargar")
+            await _auto_navigation_diagnostic(page, "Reabrir Lista de Precios")
+            await page.reload(wait_until="domcontentloaded", timeout=30000)
 
 async def _auto_try_confirm_popup_download(popup):
     labels = ("Descargar", "Guardar", "Aceptar", "Excel", "Exportar", "Generar", "Continuar")
@@ -1136,64 +1317,84 @@ async def _auto_try_confirm_popup_download(popup):
                 continue
     return False
 
-async def _auto_wait_price_export_download(erp_page, rframe):
+async def _auto_wait_price_export_download(erp_page, rframe, *, progress_cb=None):
+    report = progress_cb or _auto_log
     export_locator = rframe.locator(
         "a:has-text('Exportar'), button:has-text('Exportar'), input[value='Exportar']"
     ).last
+    await export_locator.wait_for(state="visible", timeout=15000)
+    received = asyncio.get_running_loop().create_future()
+    popups, confirmations = [], []
 
-    direct_download_task = asyncio.create_task(erp_page.wait_for_event("download", timeout=45000))
-    popup_task = asyncio.create_task(erp_page.wait_for_event("popup", timeout=45000))
+    def on_download(download):
+        if not received.done():
+            received.set_result(download)
 
-    try:
-        await export_locator.click(force=True)
-        done, pending = await asyncio.wait(
-            {direct_download_task, popup_task},
-            return_when=asyncio.FIRST_COMPLETED,
-            timeout=45000,
-        )
-        if not done:
-            raise AutoDownloadError("No comenzó la descarga ni apareció ventana nueva al exportar Lista de Precios.")
-
-        if direct_download_task in done:
-            popup_task.cancel()
-            _auto_log("Lista de Precios: descarga directa detectada")
-            return direct_download_task.result()
-
-        popup = popup_task.result()
-        direct_download_task.cancel()
-        _auto_log("Lista de Precios: ventana nueva de exportación detectada")
-        await _auto_wait_light(popup, timeout=15000)
-
-        popup_download_task = asyncio.create_task(popup.wait_for_event("download", timeout=45000))
+    async def confirm(popup):
         try:
-            await _auto_try_confirm_popup_download(popup)
-            return await popup_download_task
-        finally:
-            if not popup_download_task.done():
-                popup_download_task.cancel()
-            try:
-                await popup.close()
-            except Exception:
-                pass
+            report("Precios · Esperar la confirmación de la ventana de exportación…")
+            await _auto_wait_light(popup, timeout=15000)
+            deadline = asyncio.get_running_loop().time() + 15
+            while not received.done() and not popup.is_closed():
+                if await _auto_try_confirm_popup_download(popup):
+                    return  # Confirmar una vez; el archivo puede llegar en cualquiera de las páginas.
+                if asyncio.get_running_loop().time() >= deadline:
+                    return
+                await _auto_pause(0.3)
+        except Exception as exc:
+            _auto_log(f"Lista de Precios: confirmación pendiente ({type(exc).__name__})")
+            await _auto_navigation_diagnostic(popup, "Confirmar exportación de precios")
+
+    def on_popup(popup):
+        popups.append(popup)
+        # Registrar antes de esperar que cargue: algunos informes descargan al abrirse.
+        popup.on("download", on_download)
+        confirmations.append(asyncio.create_task(confirm(popup)))
+
+    erp_page.on("download", on_download)
+    erp_page.on("popup", on_popup)
+    try:
+        report("Precios · Pulsar Exportar y esperar el archivo…")
+        await export_locator.click(force=True)
+        try:
+            download = await asyncio.wait_for(received, timeout=90)
+        except asyncio.TimeoutError as exc:
+            detail = ("Se abrió la ventana de exportación, pero no entregó el archivo."
+                      if popups else "No comenzó la descarga ni apareció una ventana de exportación.")
+            raise AutoDownloadError(detail) from exc
+        report("Precios · Archivo detectado; esperando que termine la descarga…")
+        # Cerrar el popup antes de recibir todos los bytes puede cancelar el archivo.
+        failure = await asyncio.wait_for(download.failure(), timeout=300)
+        if failure:
+            raise AutoDownloadError(f"Defontana no completó la descarga de precios: {failure}")
+        return download
     finally:
-        for task in (direct_download_task, popup_task):
+        erp_page.remove_listener("download", on_download)
+        erp_page.remove_listener("popup", on_popup)
+        for popup in popups:
+            popup.remove_listener("download", on_download)
+        for task in confirmations:
             if not task.done():
                 task.cancel()
+        await asyncio.gather(*confirmations, return_exceptions=True)
+        await asyncio.gather(*(popup.close() for popup in popups), return_exceptions=True)
+        if not received.done():
+            received.cancel()
 
-async def _auto_download_price_ranges(erp_page, download_dir: Path) -> Path:
-    await erp_page.locator("text=Ventas").first.click()
-    await _auto_pause(0.2)
-    sales_items = erp_page.locator("text=Ventas")
-    if await sales_items.count() >= 2:
-        await sales_items.nth(1).click()
-    await _auto_pause(0.2)
+async def _auto_download_price_ranges(erp_page, download_dir: Path, *, progress_cb=None) -> Path:
+    report = progress_cb or _auto_log
+    stage = "Abrir Informes de Ventas"
 
-    await _auto_click_classic_sales_report(erp_page)
-    await _auto_click_lista_precios_tab(erp_page)
+    def step(text):
+        nonlocal stage
+        stage = text
+        report(f"Precios · {text}…")
 
-    rframe = await _auto_get_price_report_frame(erp_page)
-    radio_result = await rframe.evaluate(
-        """
+    try:
+        rframe = await _auto_open_price_report(erp_page, step)
+        step("Seleccionar la lista de precios configurada")
+        radio_result = await rframe.evaluate(
+            """
         () => {
             const radios = document.querySelectorAll('input[type="radio"]');
             for (const r of radios) {
@@ -1209,45 +1410,57 @@ async def _auto_download_price_ranges(erp_page, download_dir: Path) -> Path:
             }
             return 'not-found';
         }
-        """
-    )
-    if radio_result == "not-found":
-        raise AutoDownloadError("No se encontró la opción para seleccionar una lista de precios en particular.")
+            """
+        )
+        if radio_result == "not-found":
+            raise AutoDownloadError("No se encontró la opción para seleccionar una lista de precios en particular.")
 
-    select_loc = rframe.locator("select").first
-    try:
+        select_loc = rframe.locator("select").first
         await select_loc.wait_for(state="visible", timeout=10000)
-    except Exception:
-        pass
-
-    options = await rframe.evaluate(
-        "() => Array.from(document.querySelectorAll('select option')).map(o => ({v: o.value, t: o.text.trim()}))"
-    )
-    list_name = _auto_active_price_list_name()
-    match = next((o for o in options if list_name.upper() in o["t"].upper()), None)
-    if not match:
+        list_name = _auto_active_price_list_name()
         keyword = list_name.split()[1] if len(list_name.split()) > 1 else list_name
-        match = next((o for o in options if keyword.upper() in o["t"].upper()), None)
-    if not match:
-        found = ", ".join(o["t"] for o in options[:12])
-        raise AutoDownloadError(f"No se encontró '{list_name}' en Lista de Precios. Opciones visibles: {found}")
+        # La lista puede poblarse después de que aparezca el selector.
+        try:
+            await select_loc.locator("option").filter(
+                has_text=re.compile(re.escape(keyword), re.I)).first.wait_for(state="attached", timeout=15000)
+        except Exception:
+            pass  # Mostrar abajo las opciones disponibles si falta la lista configurada.
+        options = await rframe.evaluate(
+            "() => Array.from(document.querySelectorAll('select option')).map(o => ({v: o.value, t: o.text.trim()}))"
+        )
+        match = next((o for o in options if list_name.upper() in o["t"].upper()), None)
+        if not match:
+            match = next((o for o in options if keyword.upper() in o["t"].upper()), None)
+        if not match:
+            found = ", ".join(o["t"] for o in options[:12])
+            raise AutoDownloadError(f"No se encontró '{list_name}' en Lista de Precios. Opciones visibles: {found}")
 
-    await select_loc.select_option(value=match["v"])
-    await _auto_pause(0.2)
-
-    _auto_log("Haciendo click en Exportar Lista de Precios")
-    download = await _auto_wait_price_export_download(erp_page, rframe)
-    file_name = download.suggested_filename or "lista_precios.xlsx"
-    target = Path(download_dir) / file_name
-    await download.save_as(str(target))
-    if not target.exists():
-        raise AutoDownloadError(f"No se encontró la lista de precios descargada: {target}")
-    return target
+        await select_loc.select_option(value=match["v"])
+        await _auto_pause(0.2)
+        step("Exportar la lista de precios")
+        download = await _auto_wait_price_export_download(erp_page, rframe, progress_cb=report)
+        step("Guardar el archivo descargado")
+        file_name = download.suggested_filename or "lista_precios.xlsx"
+        target = Path(download_dir) / file_name
+        await download.save_as(str(target))
+        if not target.is_file() or target.stat().st_size == 0:
+            raise AutoDownloadError("Defontana no entregó un archivo de precios completo.")
+        report("Precios · Archivo recibido.")
+        return target
+    except Exception as exc:
+        await _auto_navigation_diagnostic(erp_page, stage)
+        detail = str(exc).split("Call log:", 1)[0].strip() or type(exc).__name__
+        raise AutoDownloadError(f"Falló en la etapa «{stage}». {detail}") from exc
 
 async def auto_download_sources(usuario: str, password: str, keys, progress_cb=None, *,
-                                on_start=None, on_result=None):
+                                on_start=None, on_result=None, cancel_event=None):
     """Descarga y valida las fuentes elegidas, en orden y con la misma sesión."""
+    def check_cancelled():
+        if cancel_event is not None and cancel_event.is_set():
+            raise asyncio.CancelledError
+
     def progress(text):
+        check_cancelled()
         _auto_log(text)
         if progress_cb:
             progress_cb(text)
@@ -1258,69 +1471,111 @@ async def auto_download_sources(usuario: str, password: str, keys, progress_cb=N
         raise AutoDownloadError("Usa el ejecutable actualizado para descargar los datos automáticamente.") from exc
 
     loaded, errors = {}, {}
-    APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="descarga-", dir=APP_DATA_DIR) as folder:
-        staging = Path(folder)
-        async with async_playwright() as playwright:
-            browser, context, page = await _auto_new_page(playwright, staging)
-            try:
-                progress("Iniciando sesión en Tivendo…")
-                await _auto_login_tivendo(page, usuario, password)
-                provider_error = None
+    watcher = (asyncio.create_task(_auto_cancel_on_event(cancel_event, asyncio.current_task()))
+               if cancel_event is not None else None)
+    try:
+        check_cancelled()
+        APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="descarga-", dir=APP_DATA_DIR) as folder:
+            staging = Path(folder)
+            async with async_playwright() as playwright:
+                browser, context, page = await _auto_new_page(playwright, staging)
                 try:
-                    await _auto_ensure_mercado_house(page, usuario, password,
-                                                    require_confirmation="proveedores" in keys)
-                except AutoDownloadError as exc:
-                    if "proveedores" not in keys or len(keys) == 1:
-                        raise
-                    await _auto_ensure_mercado_house(page, usuario, password)
-                    provider_error = exc
-
-                pos = erp = None
-                for key in keys:
-                    if on_start:
-                        on_start(key)
+                    progress("Iniciando sesión en Tivendo…")
+                    await _auto_retry("iniciar sesión en Tivendo",
+                                      lambda: _auto_login_tivendo(page, usuario, password),
+                                      attempts=3, wait=2, progress_cb=progress)
+                    provider_error = None
                     try:
-                        if key in {"articulos", "packs"}:
-                            if pos is None:
-                                progress("Abriendo Punto de Ventas…")
-                                pos = await _auto_open_pos(context, page)
-                            progress(f"Descargando {DATA_SOURCES[key].lower()}…")
-                            section = "Packs" if key == "packs" else "Listado de artículos"
-                            source = await _auto_download_from_pos(pos, section, f"{key}.xlsx", staging)
-                            parsed = load_packs_data(source) if key == "packs" else leer_catalogo_articulos(source)
-                            result = (_save_downloaded_source(key, source), parsed)
-                        else:
-                            if key == "proveedores" and provider_error is not None:
-                                raise provider_error
-                            if erp is None:
-                                progress("Abriendo ERP Digital de Defontana…")
-                                erp = await _auto_open_erp(context, page)
-                            if key == "precios":
-                                progress("Descargando lista de precios y rangos…")
-                                source = await _auto_download_price_ranges(erp, staging)
-                                parsed = load_price_ranges_data(source)
-                                result = (_save_downloaded_source(key, source), parsed)
+                        await _auto_ensure_mercado_house(page, usuario, password,
+                                                        require_confirmation="proveedores" in keys)
+                    except AutoDownloadError as exc:
+                        if "proveedores" not in keys or len(keys) == 1:
+                            raise
+                        await _auto_ensure_mercado_house(page, usuario, password)
+                        provider_error = exc
+
+                    pos = erp = None
+                    for key in keys:
+                        check_cancelled()
+                        if on_start:
+                            on_start(key)
+                        for attempt in range(1, 4):
+                            try:
+                                with tempfile.TemporaryDirectory(prefix=f"{key}-", dir=staging) as attempt_folder:
+                                    target = Path(attempt_folder)
+                                    if key in {"articulos", "packs"}:
+                                        if pos is None:
+                                            progress("Abriendo Punto de Ventas…")
+                                            pos = await _auto_open_pos(context, page)
+                                        progress(f"Descargando {DATA_SOURCES[key].lower()} (intento {attempt} de 3)…")
+                                        section = "Packs" if key == "packs" else "Listado de artículos"
+                                        source = await _auto_download_from_pos(
+                                            pos, section, f"{key}.xlsx", target,
+                                            progress_cb=lambda text: progress(f"Intento {attempt} de 3 · {text}"))
+                                        check_cancelled()
+                                        progress(f"Comprobando el Excel de {DATA_SOURCES[key].lower()}…")
+                                        parsed = load_packs_data(source) if key == "packs" else leer_catalogo_articulos(source)
+                                        check_cancelled()
+                                        progress(f"Guardando {DATA_SOURCES[key].lower()}…")
+                                        result = (_save_downloaded_source(key, source), parsed)
+                                    else:
+                                        if key == "proveedores" and provider_error is not None:
+                                            raise provider_error
+                                        if erp is None:
+                                            progress("Abriendo ERP Digital de Defontana…")
+                                            erp = await _auto_open_erp(context, page)
+                                        if key == "precios":
+                                            progress(f"Descargando lista de precios y rangos (intento {attempt} de 3)…")
+                                            source = await _auto_download_price_ranges(
+                                                erp, target,
+                                                progress_cb=lambda text: progress(f"Intento {attempt} de 3 · {text}"))
+                                            check_cancelled()
+                                            progress("Comprobando el Excel de precios y rangos…")
+                                            parsed = load_price_ranges_data(source)
+                                            check_cancelled()
+                                            progress("Guardando la lista de precios y rangos…")
+                                            result = (_save_downloaded_source(key, source), parsed)
+                                        else:
+                                            result = await _auto_download_provider_categories(
+                                                erp, target,
+                                                lambda text: progress(f"Intento {attempt} de 3 · {text}"))
+                                            check_cancelled()
+                            except Exception as exc:
+                                _auto_log(f"{DATA_SOURCES[key]}: intento {attempt} de 3 fallido. {exc}")
+                                if attempt == 3:
+                                    errors[key] = exc
+                                    progress(f"{DATA_SOURCES[key]}: falló después de 3 intentos.")
+                                else:
+                                    progress(f"{DATA_SOURCES[key]}: Falló. Reintentando… (intento {attempt + 1} de 3)")
+                                    await _auto_pause(2)
                             else:
-                                result = await _auto_download_provider_categories(erp, staging, progress)
+                                loaded[key] = result
+                                break
+                        if on_result:
+                            on_result(key, loaded.get(key), errors.get(key))
+                finally:
+                    try:
+                        await browser.close()
                     except Exception as exc:
-                        errors[key] = exc
-                    else:
-                        loaded[key] = result
-                    if on_result:
-                        on_result(key, loaded.get(key), errors.get(key))
-            finally:
-                try:
-                    await browser.close()
-                except Exception as exc:
-                    _auto_log(f"No se pudo cerrar el navegador de descarga: {type(exc).__name__}")
+                        _auto_log(f"No se pudo cerrar el navegador de descarga: {type(exc).__name__}")
+    except asyncio.CancelledError:
+        if cancel_event is None or not cancel_event.is_set():
+            raise
+    finally:
+        if watcher is not None:
+            watcher.cancel()
+            await asyncio.gather(watcher, return_exceptions=True)
     return loaded, errors
 
 
-async def auto_download_solo_articulos(usuario: str, password: str, progress_cb=None):
-    loaded, errors = await auto_download_sources(usuario, password, ("articulos",), progress_cb)
+async def auto_download_solo_articulos(usuario: str, password: str, progress_cb=None, *, cancel_event=None):
+    loaded, errors = await auto_download_sources(usuario, password, ("articulos",), progress_cb,
+                                               cancel_event=cancel_event)
     if errors:
         raise errors["articulos"]
+    if "articulos" not in loaded:
+        raise asyncio.CancelledError
     return loaded["articulos"]
 
 
@@ -1355,30 +1610,50 @@ def leer_proveedores_defontana(path: Path) -> Dict[int, str]:
 
 
 async def _auto_download_provider_categories(erp_page, staging, progress):
-    progress("Abriendo ERP Digital → Inventario → Artículos…")
+    stage = "Abrir ERP Digital → Inventario → Artículos"
+
+    def step(text):
+        nonlocal stage
+        stage = text
+        progress(f"Proveedores · {text}…")
+
     erp_page.on("requestfailed", _auto_log_provider_navigation_failure)
-    await erp_page.set_viewport_size({"width": 1920, "height": 960})
-    await _auto_open_article_master(erp_page)
-    progress("Esperando la descarga de Categorías en Resultados…")
     try:
-        export = await _auto_find_category_export(erp_page)
-    except ArticleMasterNotReady:
-        progress("El Maestro de Artículos no cargó. Reintentando en la misma sesión (2 de 2)…")
-        await erp_page.reload(wait_until="domcontentloaded", timeout=30000)
-        await _auto_open_article_master(erp_page)
-        progress("Esperando Categorías en el segundo intento…")
-        export = await _auto_find_category_export(erp_page)
-    progress("Descargando el Excel de Categorías…")
-    try:
-        async with erp_page.expect_download(timeout=90000) as download_info:
-            await export.click(timeout=15000)
+        await erp_page.set_viewport_size({"width": 1920, "height": 960})
+        for attempt in range(2):
+            try:
+                step("Abrir ERP Digital → Inventario → Artículos")
+                await _auto_open_article_master(erp_page)
+                step("Esperar el botón Categorías junto a Limpiar en Resultados")
+                export = await _auto_find_category_export(erp_page)
+                break
+            except Exception:
+                if attempt:
+                    raise
+                step("Volver a abrir Artículos porque no terminó de cargar Categorías")
+                await _auto_navigation_diagnostic(erp_page, stage)
+                await erp_page.reload(wait_until="domcontentloaded", timeout=30000)
+        step("Pulsar Categorías y esperar el archivo")
+        try:
+            async with erp_page.expect_download(timeout=90000) as download_info:
+                await export.click(timeout=15000)
+        finally:
+            await export.dispose()
+        download = await download_info.value
+        step("Guardar el archivo descargado")
+        target = Path(staging) / "categorias.xlsx"
+        await download.save_as(str(target))
+        if not target.is_file() or target.stat().st_size == 0:
+            raise AutoDownloadError("Defontana no entregó un archivo de Categorías completo.")
+        step("Comprobar el Excel de Categorías")
+        return leer_proveedores_defontana(target)
+    except Exception as exc:
+        await _auto_navigation_diagnostic(erp_page, stage)
+        detail = str(exc).split("Call log:", 1)[0].strip() or type(exc).__name__
+        error_type = ValueError if isinstance(exc, ValueError) else AutoDownloadError
+        raise error_type(f"Falló en la etapa «{stage}». {detail}") from exc
     finally:
-        await export.dispose()
-    download = await download_info.value
-    target = staging / "categorias.xlsx"
-    await download.save_as(str(target))
-    progress("Comprobando el Excel de Categorías…")
-    return leer_proveedores_defontana(target)
+        erp_page.remove_listener("requestfailed", _auto_log_provider_navigation_failure)
 
 
 def _auto_log_provider_navigation_failure(request):
@@ -3002,6 +3277,7 @@ class StartView(ttk.Frame):
         on_load_file,
         on_update_source,
         on_auto_load,
+        on_open_settings=None,
     ):
         super().__init__(master, style="Home.TFrame")
         self.master.title("Herramientas — MERCADO HOUSE")
@@ -3023,10 +3299,16 @@ class StartView(ttk.Frame):
 
         header = ttk.Frame(self, style="HomeHero.TFrame", padding=(0, 8))
         header.pack(fill="x", padx=18, pady=(12, 9))
-        ttk.Label(header, text="MERCADO HOUSE", style="HomeHeroEyebrow.TLabel").pack(anchor="center")
-        ttk.Label(header, text="Herramientas", style="HomeHeroTitle.TLabel").pack(anchor="center", pady=(2, 0))
+        header.columnconfigure(0, weight=1, uniform="header_sides")
+        header.columnconfigure(2, weight=1, uniform="header_sides")
+        ttk.Label(header, text="MERCADO HOUSE", style="HomeHeroEyebrow.TLabel").grid(row=0, column=1)
+        ttk.Label(header, text="Herramientas", style="HomeHeroTitle.TLabel").grid(row=1, column=1, pady=(2, 0))
         ttk.Label(header, text="Artículos, proveedores y archivos para Tivendo.",
-                  style="HomeHeroSubtitle.TLabel").pack(anchor="center", pady=(2, 0))
+                  style="HomeHeroSubtitle.TLabel").grid(row=2, column=1, pady=(2, 0))
+        if on_open_settings is not None:
+            self.btn_settings = ttk.Button(header, text="⚙ Configuración", command=on_open_settings)
+            self.btn_settings.grid(row=0, column=2, rowspan=3, sticky="ne")
+            self.update_controls.append(self.btn_settings)
 
         ttk.Label(self, text="ELIGE UNA TAREA", style="HomeSection.TLabel").pack(
             anchor="w", padx=18, pady=(0, 3))
@@ -3066,6 +3348,7 @@ class StartView(ttk.Frame):
             selected = DATA_SOURCES
         self.source_selection = {}
         self.source_labels = {}
+        self.source_update_buttons = {}
         for row, (key, title) in enumerate(DATA_SOURCES.items(), start=1):
             choice = tk.BooleanVar(master=self, value=key in selected)
             self.source_selection[key] = choice
@@ -3081,6 +3364,7 @@ class StartView(ttk.Frame):
             choose.grid(row=row, column=3, padx=(8, 0), pady=2)
             update = ttk.Button(sources, text="Actualizar", command=lambda key=key: on_update_source(key))
             update.grid(row=row, column=4, padx=(8, 0), pady=2)
+            self.source_update_buttons[key] = update
             self.update_controls.extend((select, choose, update))
         self.refresh_source_selection_controls()
 
@@ -3089,6 +3373,9 @@ class StartView(ttk.Frame):
         self.update_title.pack(anchor="w")
         self.update_status = ttk.Label(self.update_panel, style="HomeDataMuted.TLabel", wraplength=830, justify="left")
         self.update_status.pack(fill="x", pady=(4, 0))
+        self.update_failures = ttk.Label(self.update_panel, style="HomeDataWarning.TLabel",
+                                        wraplength=830, justify="left")
+        self.source_failure_details = {}
         self.update_bar = ttk.Progressbar(self.update_panel, mode="indeterminate")
 
     def _open_games(self):
@@ -3120,8 +3407,10 @@ class StartView(ttk.Frame):
             choice.set(select)
         self.save_source_selection()
 
-    def begin_source_update(self, title, keys, *, batch=False):
+    def begin_source_update(self, title, keys, *, batch=False, on_cancel=None):
         self.update_in_progress = True
+        self.source_failure_details.clear()
+        self.update_failures.pack_forget()
         for key in DATA_SOURCES:
             if key in keys:
                 self.set_source_status(key, "Esperando")
@@ -3135,15 +3424,39 @@ class StartView(ttk.Frame):
         self.update_enabled = [button for button in self.update_controls if not button.instate(("disabled",))]
         for button in self.update_enabled:
             button.state(("disabled",))
+        self.cancel_button = None
+        self._cancel_button_original = None
+        if on_cancel is not None:
+            button = self.btn_cargar_auto if batch else self.source_update_buttons[keys[0]]
+            self.cancel_button = button
+            self._cancel_button_original = button.cget("text"), button.cget("command")
+            button.config(text="Cancelar actualización", command=on_cancel, state="normal")
 
     def report_source_update(self, text):
         self.update_status.config(text=text)
 
+    def report_source_failure(self, key, error):
+        detail = str(error).split("Call log:", 1)[0].strip() or type(error).__name__
+        self.source_failure_details[key] = f"{DATA_SOURCES[key]} · {detail}"
+        self.update_failures.config(text="\n".join(self.source_failure_details.values()))
+        self.update_failures.pack(fill="x", pady=(8, 0))
+
+    def show_source_cancelling(self):
+        self.update_status.config(text="Cancelando la actualización…")
+        if self.cancel_button is not None:
+            self.cancel_button.config(text="Cancelando…", state="disabled")
+
     def finish_source_update(self, title, text, warning=False):
         self.update_bar.stop()
         self.update_bar.pack_forget()
+        self.update_failures.pack_forget()
         self.update_title.config(text=title)
         self.update_status.config(text=text, style="HomeDataWarning.TLabel" if warning else "HomeDataSuccess.TLabel")
+        if self.cancel_button is not None:
+            old_text, old_command = self._cancel_button_original
+            self.cancel_button.config(text=old_text, command=old_command)
+            self.cancel_button = None
+            self._cancel_button_original = None
         for button in self.update_enabled:
             button.state(("!disabled",))
         self.update_in_progress = False
@@ -4274,6 +4587,7 @@ class RootApp(tk.Tk):
         self.ranges_df = None
         self.ranges_index = {}
         self.auto_last_load_text = ""
+        self._credentials_window = None
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -4412,15 +4726,23 @@ class RootApp(tk.Tk):
 
         self._run_source_job((key,), load)
 
-    def _ask_auto_credentials(self) -> Optional[tuple]:
+    def _open_settings(self):
+        if not getattr(self, "_auto_load_busy", False):
+            self._ask_auto_credentials(force_prompt=True)
+
+    def _ask_auto_credentials(self, *, force_prompt=False) -> Optional[tuple]:
         saved = load_auto_credentials()
-        if saved.get("usuario") and saved.get("password"):
+        if not force_prompt and saved.get("usuario") and saved.get("password"):
             # Ya quedaron guardadas de una carga anterior: no volver a preguntar
             # cada vez que se abre el programa.
             return saved["usuario"], saved["password"]
 
+        if self._credentials_window is not None and self._credentials_window.winfo_exists():
+            self._credentials_window.lift()
+            return None
         dialog = tk.Toplevel(self)
-        dialog.title("Carga automática")
+        self._credentials_window = dialog
+        dialog.title("Configuración de acceso" if force_prompt else "Carga automática")
         dialog.configure(background=UI["background"])
         dialog.transient(self)
         dialog.grab_set()
@@ -4461,9 +4783,12 @@ class RootApp(tk.Tk):
 
         def accept():
             usuario = user_var.get().strip()
-            password = pass_var.get().strip()
+            password = pass_var.get()
             if not usuario or not password:
                 messagebox.showwarning("Datos requeridos", "Ingresa usuario y contraseña.", parent=dialog)
+                return
+            if not save_auto_credentials(usuario, password):
+                messagebox.showerror("No se pudo guardar", "No se pudo guardar el acceso. Inténtalo nuevamente.", parent=dialog)
                 return
             result["value"] = (usuario, password)
             dialog.destroy()
@@ -4475,7 +4800,7 @@ class RootApp(tk.Tk):
         buttons = ttk.Frame(frame)
         buttons.grid(row=4, column=0, columnspan=3, sticky="e")
         ttk.Button(buttons, text="Cancelar", command=cancel).pack(side="left", padx=(0, 8))
-        ttk.Button(buttons, text="Cargar automáticamente", command=accept,
+        ttk.Button(buttons, text="Guardar" if force_prompt else "Guardar y actualizar", command=accept,
                    style="Primary.TButton").pack(side="left")
 
         dialog.protocol("WM_DELETE_WINDOW", cancel)
@@ -4493,6 +4818,7 @@ class RootApp(tk.Tk):
 
         user_entry.focus_set() if not user_var.get() else pass_entry.focus_set()
         self.wait_window(dialog)
+        self._credentials_window = None
         return result["value"]
 
     def _actualizar_solo_articulos(self, on_success):
@@ -4505,21 +4831,22 @@ class RootApp(tk.Tk):
         if not credentials:
             return
         usuario, password = credentials
-        save_auto_credentials(usuario, password)
 
         def load(progress, started, finished):
             try:
                 if keys == ("articulos",) and on_success is not None:
                     started("articulos")
-                    result = asyncio.run(auto_download_solo_articulos(usuario, password, progress))
+                    result = asyncio.run(auto_download_solo_articulos(
+                        usuario, password, progress, cancel_event=self._source_cancel_event))
                     return {"articulos": result}, {}
                 return asyncio.run(auto_download_sources(usuario, password, keys, progress,
-                                                         on_start=started, on_result=finished))
+                                                         on_start=started, on_result=finished,
+                                                         cancel_event=self._source_cancel_event))
             except TivendoLoginError as exc:
                 save_auto_credentials(usuario, "")
-                raise AutoDownloadError("No se pudo iniciar sesión en Tivendo. Revisa tu usuario y contraseña.") from exc
+                raise AutoDownloadError("Tivendo rechazó los datos de acceso. Corrige el correo y la contraseña en Configuración.") from exc
 
-        self._run_source_job(keys, load, on_success, batch=batch)
+        self._run_source_job(keys, load, on_success, batch=batch, cancellable=True)
 
     def _aplicar_fuente(self, key, result):
         if key == "proveedores":
@@ -4537,7 +4864,7 @@ class RootApp(tk.Tk):
             self.ranges_path = path
             self.ranges_df, self.ranges_index = parsed
 
-    def _run_source_job(self, keys, load, on_success=None, *, batch=False):
+    def _run_source_job(self, keys, load, on_success=None, *, batch=False, cancellable=False):
         if getattr(self, "_auto_load_busy", False):
             return
         self._auto_load_busy = True
@@ -4546,8 +4873,23 @@ class RootApp(tk.Tk):
         else:
             title = f"Actualizar {DATA_SOURCES[keys[0]].lower()}"
         home = self.start_view
+        cancel_event = threading.Event()
+        self._source_cancel_event = cancel_event
+
+        def cancel():
+            if not cancel_event.is_set():
+                cancel_event.set()
+                if home is not None:
+                    home.show_source_cancelling()
+                else:
+                    set_status("Cancelando la actualización…")
+                    cancel_button.config(text="Cancelando…", state="disabled")
+
         if home is not None:
-            home.begin_source_update(title, keys, batch=batch)
+            if cancellable:
+                home.begin_source_update(title, keys, batch=batch, on_cancel=cancel)
+            else:
+                home.begin_source_update(title, keys, batch=batch)
             set_status = home.report_source_update
         else:
             # Los asistentes conservan el diálogo mientras están en el paso del listado.
@@ -4555,7 +4897,7 @@ class RootApp(tk.Tk):
             progress.title(title)
             progress.transient(self)
             progress.resizable(False, False)
-            progress.protocol("WM_DELETE_WINDOW", lambda: None)
+            progress.protocol("WM_DELETE_WINDOW", cancel if cancellable else lambda: None)
             progress.grab_set()
             box = ttk.Frame(progress, padding=20)
             box.pack(fill="both", expand=True)
@@ -4566,15 +4908,18 @@ class RootApp(tk.Tk):
             bar.pack(fill="x")
             bar.start(10)
             set_status = status.set
+            if cancellable:
+                cancel_button = ttk.Button(box, text="Cancelar actualización", command=cancel)
+                cancel_button.pack(anchor="e", pady=(10, 0))
 
         def report(text):
-            self.after(0, lambda: set_status(text))
+            self.after(0, lambda: None if cancel_event.is_set() else set_status(text))
 
         updated, errors = {}, {}
 
         def started(key):
             if home is not None:
-                self.after(0, lambda: home.set_source_status(key, "Actualizando"))
+                self.after(0, lambda: None if cancel_event.is_set() else home.set_source_status(key, "Actualizando"))
 
         def apply_source(key, result, error):
             if key in updated or key in errors:
@@ -4591,6 +4936,7 @@ class RootApp(tk.Tk):
                 errors[key] = error
                 if home is not None:
                     home.set_source_status(key, "Error")
+                    home.report_source_failure(key, error)
 
         def finished(key, result, error):
             self.after(0, lambda: apply_source(key, result, error))
@@ -4602,11 +4948,25 @@ class RootApp(tk.Tk):
                         apply_source(key, loaded.get(key), failures.get(key))
             finally:
                 self._auto_load_busy = False
+                self._source_cancel_event = None
                 if home is None:
                     bar.stop()
                     progress.destroy()
 
-            if errors:
+            if cancel_event.is_set():
+                pending = [key for key in keys if key not in updated and key not in errors]
+                text = "La actualización se detuvo."
+                if updated:
+                    text += "\nActualizado: " + ", ".join(DATA_SOURCES[key] for key in updated) + "."
+                if errors:
+                    text += "\nCon error: " + ", ".join(DATA_SOURCES[key] for key in errors) + "."
+                if home is not None:
+                    for key in pending:
+                        home.set_source_status(key, "Cancelado")
+                    home.finish_source_update("Actualización cancelada", text, warning=bool(errors))
+                else:
+                    messagebox.showinfo("Actualización cancelada", text, parent=self)
+            elif errors:
                 by_reason = {}
                 for key, exc in errors.items():
                     reason = str(exc).split("Call log:", 1)[0].strip() or type(exc).__name__
@@ -4632,6 +4992,8 @@ class RootApp(tk.Tk):
         def worker():
             try:
                 loaded, failures = load(report, started, finished)
+            except asyncio.CancelledError:
+                loaded, failures = {}, {}
             except Exception as exc:
                 loaded, failures = {}, dict.fromkeys(keys, exc)
             self.after(0, lambda: apply(loaded, failures))
@@ -4653,6 +5015,7 @@ class RootApp(tk.Tk):
             on_load_file=self._cargar_archivo_fuente,
             on_update_source=lambda key: self._actualizar_fuentes((key,)),
             on_auto_load=lambda keys: self._actualizar_fuentes(keys, batch=True),
+            on_open_settings=self._open_settings,
         )
         self._refresh_start_sources()
 

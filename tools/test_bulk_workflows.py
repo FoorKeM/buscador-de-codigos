@@ -98,7 +98,7 @@ class DescargaTests(unittest.TestCase):
             packs.write_bytes(b"packs originales")
             prices.write_bytes(b"precios originales")
 
-            async def download(page, name, fallback, staging):
+            async def download(page, name, fallback, staging, **_):
                 path = staging / "listado.xlsx"
                 exportar_catalogo(path)
                 return path
@@ -120,7 +120,7 @@ class DescargaTests(unittest.TestCase):
                 browser.close.assert_awaited_once()
                 previous = path.read_bytes()
 
-                async def invalid_download(page, name, fallback, staging):
+                async def invalid_download(page, name, fallback, staging, **_):
                     source = staging / "listado.xlsx"
                     app.pd.DataFrame({"Contenido incorrecto": ["sin artículos"]}).to_excel(source, index=False)
                     return source
