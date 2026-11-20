@@ -174,7 +174,7 @@ class ProviderSyncTests(unittest.TestCase):
             with mock.patch.dict(sys.modules, {"playwright": ModuleType("playwright"), "playwright.async_api": module}), \
                  mock.patch.object(app, "APP_DATA_DIR", root), mock.patch.object(app, "AUTO_DOWNLOAD_DIR", stored), \
                  mock.patch.object(app, "_auto_new_page", mock.AsyncMock(return_value=(browser, object(), object()))), \
-                 mock.patch.object(app, "_auto_login_tivendo", mock.AsyncMock()) as login, \
+                 mock.patch.object(app, "_auto_login_defontana", mock.AsyncMock()) as login, \
                  mock.patch.object(app, "_auto_ensure_mercado_house", mock.AsyncMock()), mock.patch.object(app, "_auto_log"), \
                  mock.patch.object(app, "_auto_pause", mock.AsyncMock()), \
                  mock.patch.object(app, "_auto_open_pos", mock.AsyncMock(return_value=pos)), \
@@ -271,7 +271,7 @@ class ProviderSyncTests(unittest.TestCase):
                      mock.patch.object(app, "_auto_log"), \
                      mock.patch.object(app, "_auto_pause", mock.AsyncMock()), \
                      mock.patch.object(app, "_auto_new_page", mock.AsyncMock(return_value=(browser, object(), object()))), \
-                     mock.patch.object(app, "_auto_login_tivendo", mock.AsyncMock()), \
+                     mock.patch.object(app, "_auto_login_defontana", mock.AsyncMock()), \
                      mock.patch.object(app, "_auto_ensure_mercado_house", mock.AsyncMock()) as verify_company, \
                      mock.patch.object(app, "_auto_open_erp", mock.AsyncMock(return_value=erp)):
                     sync = app.auto_download_sources("test", "test", ("proveedores",))

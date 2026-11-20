@@ -39,7 +39,7 @@ class SourceDownloadControlTests(unittest.TestCase):
         self.stack.enter_context(mock.patch.object(app, "_auto_pause", mock.AsyncMock()))
         self.stack.enter_context(mock.patch.object(app, "_auto_new_page",
             mock.AsyncMock(return_value=(self.browser, object(), object()))))
-        self.stack.enter_context(mock.patch.object(app, "_auto_login_tivendo", mock.AsyncMock()))
+        self.stack.enter_context(mock.patch.object(app, "_auto_login_defontana", mock.AsyncMock()))
         self.stack.enter_context(mock.patch.object(app, "_auto_ensure_mercado_house", mock.AsyncMock()))
         self.stack.enter_context(mock.patch.object(app, "_auto_open_pos", mock.AsyncMock()))
         self.stack.enter_context(mock.patch.object(app, "_auto_open_erp", mock.AsyncMock()))
@@ -147,14 +147,14 @@ class SourceDownloadControlTests(unittest.TestCase):
             self.cancel.set()
             await asyncio.Event().wait()
 
-        with mock.patch.object(app, "_auto_login_tivendo", side_effect=wait_login):
+        with mock.patch.object(app, "_auto_login_defontana", side_effect=wait_login):
             loaded, errors = self.run_download(("articulos",))
         self.assertEqual((loaded, errors), ({}, {}))
         self.download.assert_not_awaited()
         self.browser.close.assert_awaited_once()
 
     def test_reintenta_el_login_si_el_portal_falla_temporalmente(self):
-        with mock.patch.object(app, "_auto_login_tivendo",
+        with mock.patch.object(app, "_auto_login_defontana",
                 mock.AsyncMock(side_effect=[TimeoutError("Portal lento"), None])) as login:
             loaded, errors = self.run_download(("articulos",))
         self.assertEqual(login.await_count, 2)
@@ -163,11 +163,29 @@ class SourceDownloadControlTests(unittest.TestCase):
         self.assertTrue(any("Falló al iniciar sesión" in text for text in self.messages))
 
     def test_credenciales_incorrectas_se_informan_sin_repetir_el_login(self):
-        with mock.patch.object(app, "_auto_login_tivendo",
+        with mock.patch.object(app, "_auto_login_defontana",
                 mock.AsyncMock(side_effect=app.TivendoLoginError("Credenciales incorrectas"))) as login:
             with self.assertRaises(app.TivendoLoginError):
                 self.run_download(("articulos",))
         login.assert_awaited_once()
+        self.download.assert_not_awaited()
+        self.browser.close.assert_awaited_once()
+
+    def test_respuesta_de_acceso_desconocida_no_reintenta_el_login(self):
+        with mock.patch.object(app, "_auto_login_defontana", mock.AsyncMock(
+                side_effect=app.DefontanaLoginUnconfirmed("Esperando confirmación"))) as login:
+            with self.assertRaises(app.DefontanaLoginUnconfirmed):
+                self.run_download(("articulos",))
+        login.assert_awaited_once()
+        self.download.assert_not_awaited()
+        self.browser.close.assert_awaited_once()
+
+    def test_error_de_acceso_al_cambiar_empresa_no_se_reintenta_por_incluir_proveedores(self):
+        with mock.patch.object(app, "_auto_ensure_mercado_house", mock.AsyncMock(
+                side_effect=app.DefontanaLoginUnconfirmed("Acceso sin confirmar"))) as company:
+            with self.assertRaises(app.DefontanaLoginUnconfirmed):
+                self.run_download(("articulos", "proveedores"))
+        company.assert_awaited_once()
         self.download.assert_not_awaited()
         self.browser.close.assert_awaited_once()
 

@@ -108,7 +108,7 @@ class DescargaTests(unittest.TestCase):
                  mock.patch.object(app, "AUTO_DOWNLOAD_DIR", downloads), \
                  mock.patch.object(app, "_auto_log"), \
                  mock.patch.object(app, "_auto_new_page", mock.AsyncMock(return_value=(browser, object(), object()))), \
-                 mock.patch.object(app, "_auto_login_tivendo", mock.AsyncMock()), \
+                 mock.patch.object(app, "_auto_login_defontana", mock.AsyncMock()), \
                  mock.patch.object(app, "_auto_ensure_mercado_house", mock.AsyncMock()), \
                  mock.patch.object(app, "_auto_open_pos", mock.AsyncMock()), \
                  mock.patch.object(app, "_auto_download_from_pos", download):

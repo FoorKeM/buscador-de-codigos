@@ -105,7 +105,8 @@ _RE_CODE_TOKEN = re.compile(r"[a-z0-9-]{3,}")  # valida cada trozo de codigo (le
 
 STRIPE_COLOR = "#F3F6FA"
 MAX_RESULTS  = 500        # máximo de filas mostradas en el buscador
-APP_VERSION  = "v174"
+APP_VERSION  = "v176"
+DEFONTANA_LOGIN_URL = "https://portal.defontana.com/login"
 DEFAULT_WINDOW_SIZE = (1120, 720)
 MIN_WINDOW_SIZE = (960, 620)
 
@@ -686,10 +687,11 @@ class ArticleMasterNotReady(AutoDownloadError):
     """Defontana abrió el ERP, pero no llegó al Maestro de Artículos."""
 
 class TivendoLoginError(AutoDownloadError):
-    """Fallo especificamente al iniciar sesion en Tivendo (usuario/clave
-    incorrectos), para poder distinguirlo de otros errores de descarga y
-    mostrar un mensaje mas claro + permitir volver a pedir la contraseña."""
+    """El portal rechazó explícitamente las credenciales de Defontana."""
     pass
+
+class DefontanaLoginUnconfirmed(AutoDownloadError):
+    """Hubo un envío de acceso cuyo resultado no permite repetir la contraseña."""
 
 def _auto_active_price_list_name() -> str:
     key = AUTO_SYNC_DEFAULT_SUCURSAL
@@ -743,7 +745,7 @@ async def _auto_retry(name: str, action, attempts: int = 3, wait: float = 0.8, p
     for attempt in range(1, attempts + 1):
         try:
             return await action()
-        except TivendoLoginError:
+        except (TivendoLoginError, DefontanaLoginUnconfirmed):
             raise
         except Exception as exc:
             last_error = exc
@@ -870,36 +872,86 @@ async def _auto_click_portal_module(page, name: str):
             )
     await page.locator("[data-buscador-module]").click(timeout=8000)
 
-async def _auto_login_tivendo(page, usuario: str, password: str):
-    _auto_log("Abriendo login Tivendo")
-    await page.goto("https://tivendoapp.defontana.com/login", timeout=30000)
-    try:
-        await page.wait_for_selector("input", state="visible", timeout=10000)
-    except Exception:
-        await _auto_wait_light(page)
-        if "login" not in page.url.lower():
-            _auto_log("Sesion Tivendo reutilizada")
-            return
-        await page.wait_for_selector("input", state="visible", timeout=20000)
+def _auto_at_defontana_portal(page, path):
+    location = urlsplit(page.url)
+    return (location.scheme == "https" and location.hostname == "portal.defontana.com"
+            and location.path.rstrip("/").lower() == path)
 
-    _auto_log("Ingresando credenciales Tivendo")
-    inputs = page.locator("input")
-    await inputs.nth(0).click()
-    await inputs.nth(0).press_sequentially(usuario, delay=20)
-    await _auto_pause()
-    await inputs.nth(1).click()
-    await inputs.nth(1).press_sequentially(password, delay=20)
-    await _auto_pause()
-    await page.get_by_role("button", name="Iniciar Sesión").click()
-    _auto_log("Esperando redireccion")
+
+async def _auto_wait_defontana_login(page, *, timeout=30):
+    ready = page.get_by_text(re.compile(
+        r"^(M[oó]dulos recientes|Todos|Punto de Ventas?|ERP Digital)$", re.I)).filter(visible=True)
+    rejected = page.get_by_text(re.compile(
+        r"(?:contrase[ñn]a|clave|credenciales|correo|usuario).{0,60}(?:incorrect[ao]s?|inv[áa]lid[ao]s?)"
+        r"|(?:incorrect[ao]s?|inv[áa]lid[ao]s?).{0,60}(?:contrase[ñn]a|clave|credenciales|correo|usuario)",
+        re.I)).filter(visible=True)
+    blocked = page.get_by_text(re.compile(
+        r"cuenta.{0,30}bloquead|demasiados intentos|verifica que eres humano|c[oó]digo de verificaci[oó]n",
+        re.I)).filter(visible=True)
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        if _auto_at_defontana_portal(page, "/dashboard") and await ready.count() > 0:
+            _auto_log("Acceso a Defontana confirmado en el menú de módulos")
+            return
+        if await blocked.count() > 0:
+            raise DefontanaLoginUnconfirmed(
+                "Defontana requiere una verificación o tiene el acceso bloqueado. "
+                "Se detuvo el inicio de sesión sin repetir el envío de la contraseña.")
+        if await rejected.count() > 0:
+            raise TivendoLoginError("Defontana rechazó el correo o la contraseña.")
+        await _auto_pause(0.3)
+    raise DefontanaLoginUnconfirmed(
+        "No se pudo confirmar la entrada al menú del portal de Defontana. "
+        "Se detuvo el inicio de sesión sin reenviar la contraseña. "
+        "Esto no confirma que la clave sea incorrecta.")
+
+
+async def _auto_login_defontana(page, usuario: str, password: str):
+    _auto_log("Abriendo el inicio de sesión del portal de Defontana")
+    await page.goto(DEFONTANA_LOGIN_URL, wait_until="domcontentloaded", timeout=30000)
+    if _auto_at_defontana_portal(page, "/dashboard"):
+        await _auto_wait_defontana_login(page)
+        return
+    if not _auto_at_defontana_portal(page, "/login"):
+        raise AutoDownloadError("No se abrió el formulario del portal de Defontana. No se enviaron credenciales.")
+    # Una sesión vigente puede redirigir después de cargar el documento inicial.
+    await page.wait_for_function("""() => location.hostname === 'portal.defontana.com' && (
+        location.pathname.replace(/\\/$/, '') === '/dashboard' ||
+        Array.from(document.querySelectorAll('input[type="password"]')).some(input =>
+            input.getClientRects().length > 0 && getComputedStyle(input).visibility === 'visible'))
+        """, timeout=20000)
+    if _auto_at_defontana_portal(page, "/dashboard"):
+        await _auto_wait_defontana_login(page)
+        return
+
+    user = page.get_by_label(re.compile(r"correo|e-?mail|usuario", re.I)).or_(page.locator(
+        'input[type="email"], input[autocomplete="username"], input[autocomplete="email"], '
+        'input[name="email"], input[name="username"]')).filter(visible=True).first
+    secret = page.locator('input[type="password"]').filter(visible=True).first
+    await user.wait_for(state="visible", timeout=20000)
+    await secret.wait_for(state="visible", timeout=20000)
+    if not _auto_at_defontana_portal(page, "/login"):
+        raise AutoDownloadError("El portal cambió de pantalla antes de ingresar el acceso. Vuelve a actualizar.")
     try:
-        await page.wait_for_url(lambda url: "login" not in url.lower(), timeout=20000)
-    except Exception:
-        pass
-    await _auto_wait_light(page)
-    if "login" in page.url.lower():
-        raise TivendoLoginError("Login Tivendo fallido")
-    _auto_log("Login Tivendo exitoso")
+        await user.fill(usuario)
+        await secret.fill(password)
+    except Exception as exc:
+        raise AutoDownloadError("No se pudieron completar los campos de acceso del portal de Defontana.") from exc
+    if not _auto_at_defontana_portal(page, "/login"):
+        raise AutoDownloadError("El portal cambió de pantalla antes de confirmar el acceso. Vuelve a actualizar.")
+    confirm = page.get_by_role("button", name=re.compile(r"^Confirmar$", re.I)).filter(visible=True).first
+    await confirm.wait_for(state="visible", timeout=10000)
+    _auto_log("Confirmando acceso en el portal de Defontana")
+    try:
+        # A partir del clic no se debe reenviar el formulario automáticamente.
+        await confirm.click(timeout=10000)
+        await _auto_wait_defontana_login(page)
+    except (TivendoLoginError, DefontanaLoginUnconfirmed):
+        raise
+    except Exception as exc:
+        raise DefontanaLoginUnconfirmed(
+            "No se pudo confirmar el resultado del acceso a Defontana. "
+            "Se detuvo el inicio de sesión sin reenviar la contraseña.") from exc
 
 async def _auto_read_company(page) -> str:
     for text in ("MERCADO HOUSE SPA", "MERCADO HOUSE", "NO USAR"):
@@ -983,7 +1035,7 @@ async def _auto_ensure_mercado_house(page, usuario: str, password: str, *, requi
     await _auto_wait_light(page, timeout=20000)
     await _auto_pause(0.5)
     if "login" in page.url.lower():
-        await _auto_login_tivendo(page, usuario, password)
+        await _auto_login_defontana(page, usuario, password)
 
     new_company = await _auto_read_company(page)
     if "MERCADO HOUSE" not in new_company:
@@ -1481,14 +1533,16 @@ async def auto_download_sources(usuario: str, password: str, keys, progress_cb=N
             async with async_playwright() as playwright:
                 browser, context, page = await _auto_new_page(playwright, staging)
                 try:
-                    progress("Iniciando sesión en Tivendo…")
-                    await _auto_retry("iniciar sesión en Tivendo",
-                                      lambda: _auto_login_tivendo(page, usuario, password),
+                    progress("Iniciando sesión en el portal de Defontana…")
+                    await _auto_retry("iniciar sesión en Defontana",
+                                      lambda: _auto_login_defontana(page, usuario, password),
                                       attempts=3, wait=2, progress_cb=progress)
                     provider_error = None
                     try:
                         await _auto_ensure_mercado_house(page, usuario, password,
                                                         require_confirmation="proveedores" in keys)
+                    except (TivendoLoginError, DefontanaLoginUnconfirmed):
+                        raise
                     except AutoDownloadError as exc:
                         if "proveedores" not in keys or len(keys) == 1:
                             raise
@@ -4751,7 +4805,7 @@ class RootApp(tk.Tk):
         frame = ttk.Frame(dialog, padding=20)
         frame.pack(fill="both", expand=True)
 
-        ttk.Label(frame, text="Conectar con Tivendo", style="Section.TLabel").grid(
+        ttk.Label(frame, text="Acceso a Defontana", style="Section.TLabel").grid(
             row=0, column=0, columnspan=2, sticky="w", pady=(0, 10)
         )
 
@@ -4844,7 +4898,7 @@ class RootApp(tk.Tk):
                                                          cancel_event=self._source_cancel_event))
             except TivendoLoginError as exc:
                 save_auto_credentials(usuario, "")
-                raise AutoDownloadError("Tivendo rechazó los datos de acceso. Corrige el correo y la contraseña en Configuración.") from exc
+                raise AutoDownloadError("Defontana rechazó los datos de acceso. Corrige el correo y la contraseña en Configuración.") from exc
 
         self._run_source_job(keys, load, on_success, batch=batch, cancellable=True)
 
@@ -7334,7 +7388,32 @@ class TivendoIngresoMasivoArticulosWindow(ttk.Frame):
         self.text_codext.delete("1.0", "end")
         self._actualizar_pegado_articulos()
 
+def check_installation(report_path: Path):
+    """Comprueba el paquete sin ventanas, red, credenciales ni datos del usuario."""
+    from playwright.async_api import async_playwright
+
+    output = io.BytesIO()
+    expected = {"codigo": "A000001", "barra": "00123", "precio": "1290"}
+    pd.DataFrame([expected]).to_excel(output, index=False, engine="openpyxl")
+    output.seek(0)
+    actual = pd.read_excel(output, dtype=str, keep_default_na=False, engine="openpyxl")
+    if actual.iloc[0].to_dict() != expected:
+        raise RuntimeError("La comprobación de lectura y escritura de Excel falló.")
+    report = {"version": APP_VERSION, "python": sys.version.split()[0],
+              "numpy": np.__version__, "pandas": pd.__version__,
+              "excel": "correcto", "tk": tk.TkVersion,
+              "playwright": "importado" if callable(async_playwright) else "no disponible",
+              "login_url": DEFONTANA_LOGIN_URL}
+    with report_path.open("x", encoding="utf-8") as stream:
+        json.dump(report, stream, ensure_ascii=False, indent=2)
+
+
 def main():
+    if "--check-installation" in sys.argv[1:]:
+        if len(sys.argv) != 3 or sys.argv[1] != "--check-installation":
+            raise SystemExit("Uso: --check-installation <archivo-json-nuevo>")
+        check_installation(Path(sys.argv[2]))
+        return
     app = RootApp()
     app.mainloop()
 

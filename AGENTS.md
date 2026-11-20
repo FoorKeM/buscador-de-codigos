@@ -87,6 +87,61 @@ visible while other sources continue. Diagnostic log lines include timestamp,
 app version and process ID. Log locations omit queries and OAuth fragments, and
 diagnostics read control labels rather than credential fields.
 
+Local v175 changes the authentication entry point to
+`https://portal.defontana.com/login`, using its labelled email/password fields
+and Confirmar button. The portal dashboard must show module controls before
+authentication is considered successful. Do not restore the Tivendo login URL:
+the user reports its authentication is failing and explicitly forbids live
+login attempts, including attempts with saved credentials. Test with mocks or
+an offline, isolated headless browser whose requests are fulfilled locally.
+Reuse a portal session that redirects to the dashboard while the form loads.
+After clicking Confirmar, an unconfirmed result or account verification must
+stop automatic retries without clearing the saved password. Only an explicit
+credential rejection uses TivendoLoginError (retained internal error name).
+The same stop rule applies when company selection includes suppliers; that
+fallback must not submit credentials again. Source-download retries remain.
+`tools.test_defontana_login` and `tools.test_auto_defontana_login_browser` cover
+these paths without real credentials. The latter sets the browser offline and
+blocks service workers, in addition to intercepting all page requests.
+Local v175 validation: 119 unit tests and seven offline browser scenarios
+passed. No real-account login was attempted and no saved credentials were
+read for testing. The executable matched the final source; a custom Defender
+scan recorded zero v175 detections (not a runtime safety guarantee). Its SHA-256
+is `cf04fd3ca4d054c99bbcf06bb919e212f5c1ae8fbbca285693c4f084dbbe2c6a`.
+This build is local for user testing; v174 remains the published release.
+The user subsequently reported Defender quarantining v175 on 2026-11-20.
+Local records confirm Trojan:Win32/Bearfoos.A!ml (ThreatID 2147731250) during
+execution, followed by successful remediation; the distribution EXE is absent.
+The initial clean custom scan did not predict that detection. Do not restore,
+execute or publish the blocked build, change antivirus exclusions, or generate
+cosmetic binary variants to get a clean scan. No real login attempts are
+authorized. See `docs/incidente-defender-v175.md` for the read-only comparison
+and evidence; the underlying cause and any false-positive determination remain
+unconfirmed.
+
+The user explicitly authorized installing official Python 3.13.17 as a build
+tool under `build/toolchain-v176`, without replacing the existing Python or
+changing Defender. Local v176 keeps the portal-login implementation and builds
+in the independent `build/venv-v176` environment. Installer SHA-256 and PSF
+Authenticode signature were checked, and all 17 package artifacts were checked
+against PyPI. `requirements-build-v176.lock` fixes their versions and hashes.
+This is a clean toolchain build, not a restoration of the quarantined v175.
+The app still ships as one onedir package for the existing launcher.
+`--check-installation <new-json-path>` verifies imports and an in-memory Excel
+round trip before RootApp is constructed. It does not start a browser, create
+windows, read credentials or connect to services. Tests cover this entry point.
+The v176 source passed 121 unit tests and seven offline browser login scenarios
+on Python 3.13.17; the compiled EXE also completed that hidden installation check.
+The post-execution Defender query recorded zero v176 detections and the EXE
+remained present with SHA-256
+`0eef8d9d721b38edd5be782c1432a085045b54600faf58c27f7412888d062f31`.
+This does not settle the v175 classification or guarantee later detections.
+Keep real-account login testing pending unless the user authorizes it.
+The user subsequently confirmed v176 works correctly and authorized its
+official publication. Release that exact tested EXE; do not rebuild it during
+publication. Verify the full ZIP with launcher 1.0 and 1.1, both with an existing
+v174 installation and with the old executable absent, before publishing.
+
 The user confirmed the local v173 article fix worked on the first attempt.
 Local v174 applies phase diagnostics and incomplete-screen recovery to prices
 and suppliers as well. Packs shares the article helper; test both sections.

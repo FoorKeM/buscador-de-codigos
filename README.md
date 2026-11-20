@@ -71,6 +71,21 @@ Las columnas tienen un ancho intermedio y se presentan centradas, sin estirarse 
 
 El pegado se realiza **una columna por vez**, en el cuadro que elijas. Si copias varias columnas juntas, se pide copiar una sola y se conservan los datos ya ingresados. No hay botón ni función de pegado de tablas completas. La vista previa permite revisar y editar antes de guardar. El archivo generado mantiene las siete columnas de Tivendo (`Código`, `RangoInicial1`, `RangoFinal1`, `Precio1`, `RangoInicial2`, `RangoFinal2`, `Precio2`).
 
+## Acceso por Defontana (v176)
+
+El inicio de sesión utiliza **https://portal.defontana.com/login**, con correo,
+contraseña y **Confirmar**. Desde el menú del portal se abren Punto de Ventas y
+ERP Digital. El programa ya no utiliza el formulario de acceso de Tivendo.
+
+Si el resultado de Confirmar no se puede comprobar, se detiene sin reenviar la
+contraseña ni afirmar que sea incorrecta. Los reintentos de descarga de las
+fuentes se mantienen. El acceso se edita desde **Configuración**.
+
+La compilación v176 utiliza Python oficial 3.13.17 y un entorno de
+compilación separado, con dependencias fijadas en `requirements-build-v176.lock`.
+Los equipos que usan el programa reciben el paquete con sus dependencias;
+no necesitan instalar ese entorno de compilación.
+
 ## Actualización v174
 
 La carga de artículos, packs, precios y proveedores muestra cada etapa de la descarga, reintenta hasta tres veces por fuente y permite **Cancelar actualización**. Las fuentes que terminan correctamente se conservan aunque otra falle; las que fallan mantienen sus datos anteriores.
